@@ -62,7 +62,7 @@ jobs:
             --no-perms --no-owner --no-group --no-times --omit-dir-times \
             --exclude-from=.deployignore \
             --exclude='.git' --exclude='.github' \
-            --exclude='.deployignore' --exclude='.gitignore' \
+            --exclude='.deployignore' --exclude='.gitignore' --exclude='.gitattributes' \
             --exclude='README.md' \
             -e "ssh -p ${SERVER_PORT}" \
             ./ \
