@@ -301,6 +301,11 @@ function requireRead(req) {
   if (cfg.privateRead) requireWrite(req);
 }
 
+/** 可选操作者标记：backend 代理转发时经 X-Tree2-Actor 传入，写进 uplog 便于审计（本机直连时为空）。 */
+function actorOf(req) {
+  return String(req.headers['x-tree2-actor'] || '').replace(/[^\w.-]/g, '').slice(0, 80);
+}
+
 /** 存储键只允许 `<hex2>/<hex64>[.ext]`，防止把读写指到对象目录以外。 */
 function safeKey(k) {
   if (!/^[0-9a-f]{2}\/[0-9a-f]{64}(\.[a-z0-9]{1,8})?$/.test(String(k || ''))) throw new HttpError(400, '存储键不合法');
@@ -1236,6 +1241,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     path: name ? `${segs.join('/')}/${name}` : segs.join('/'),
     files: removedFiles,
     deletedObjects,
+    actor: actorOf(req),
     at: new Date().toISOString(),
   });
   json(res, 200, { ok: true, removedFiles, removedName, deletedObjects });
@@ -1327,7 +1333,7 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
   manifestCache.delete(year);
   // 改名事件写进 uplog：tree2-publish 开头会把它应用到本地文件夹，
   // 否则下次发布会用本地旧名把云端新名覆盖回去
-  await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, at: new Date().toISOString() });
+  await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, actor: actorOf(req), at: new Date().toISOString() });
   json(res, 200, { ok: true, kind: renamed, newName });
 });
 
@@ -1637,7 +1643,7 @@ async function attachToManifest(year, key, body) {
 
   // 记录「本机上传」来源（区别于 pan-sync 从本地盘发布的那批），
   // 本地的 tree2-publish 每次发布会把这些采纳回本地清单，避免被重建覆盖
-  await logUpload(year, key, body, body.sha256);
+  await logUpload(year, key, body, body.sha256, actorOf(req));
   return true;
 }
 
@@ -1661,7 +1667,7 @@ async function appendUplog(entry) {
   }
 }
 
-async function logUpload(year, key, body, sha) {
+async function logUpload(year, key, body, sha, actor = '') {
   // 与改名/删除共用同一条 uplog 追加通道（原先是 appendUplog 的复制版，条数上限还不一致）
   await appendUplog({
     season: year,
@@ -1669,6 +1675,7 @@ async function logUpload(year, key, body, sha) {
     name: body.name || '',
     folder: String(body.folder || ''),
     sha256: sha,
+    actor,
     at: new Date().toISOString(),
   });
 }

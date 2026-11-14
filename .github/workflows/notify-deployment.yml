@@ -1,0 +1,136 @@
+name: Notify CI deployment
+
+on:
+  workflow_run:
+    workflows: ["Deploy treenext"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  checks: read
+
+jobs:
+  notify:
+    if: >-
+      ${{ github.event.workflow_run.head_repository.full_name == github.repository &&
+          (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
+          (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' ||
+           github.event.workflow_run.conclusion == 'cancelled' || github.event.workflow_run.conclusion == 'timed_out' ||
+           github.event.workflow_run.conclusion == 'startup_failure' || github.event.workflow_run.conclusion == 'action_required') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      # Use the trusted default-branch workflow and GitHub metadata; do not check out the triggering revision or read its artifacts.
+      - name: Report deployment result
+        env:
+          CI_DEPLOY_API_ORIGIN: ${{ vars.CI_DEPLOY_API_ORIGIN }}
+          CI_DEPLOY_TOKEN: ${{ secrets.CI_DEPLOY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$CI_DEPLOY_API_ORIGIN" ] || [ -z "$CI_DEPLOY_TOKEN" ]; then
+            echo "::notice::CI subscription is not configured for this repository."
+            exit 0
+          fi
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+
+          const { workflow_run: run } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const repository = process.env.GITHUB_REPOSITORY;
+          const project = /^your-org/(landing-page|console|backend|bot|wiki|treenext)$/i.exec(repository)?.[1]?.toLowerCase();
+          const origin = new URL(process.env.CI_DEPLOY_API_ORIGIN);
+          if (!project || origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
+            throw new Error('CI subscription requires a known repository and a valid HTTPS API origin.');
+          }
+          if (project !== 'treenext') {
+            console.log('This workflow only reports for treenext.');
+            process.exit(0);
+          }
+
+          const attempt = run.run_attempt || 1;
+          const api = 'https://api.github.com/repos/' + repository;
+          const headers = {Authorization:'Bearer '+process.env.GH_TOKEN,Accept:'application/vnd.github+json'};
+          const url = api + '/actions/runs/' + run.id + '/attempts/' + attempt + '/jobs?per_page=100';
+          let jobs = [];
+          try {
+            const response = await fetch(url, {headers,
+              signal:AbortSignal.timeout(15000),redirect:'error'});
+            if (!response.ok) throw new Error('jobs unavailable');
+            const data = await response.json();
+            if (!Array.isArray(data.jobs)) throw new Error('invalid job details');
+            jobs = data.jobs;
+          } catch {
+            if (run.conclusion === 'success') throw new Error('GitHub job details were unavailable; deployment success could not be verified.');
+            console.warn('::warning::GitHub job details were unavailable; sending the workflow result.');
+          }
+          if (run.conclusion === 'success' && !jobs.some(job => job.name === 'deploy' && job.conclusion === 'success')) {
+            console.log('No deployment job succeeded in this attempt; no deployment notification was sent.');
+            process.exit(0);
+          }
+
+          const failed = ['failure','timed_out','startup_failure','action_required'];
+          const badJobs = jobs.filter(job => failed.includes(job.conclusion));
+          const details = badJobs.map(job => {
+            const steps = (job.steps || []).filter(step => failed.includes(step.conclusion)).map(step => step.name);
+            return job.name + (steps.length ? '：'+steps.join('、') : '（'+({timed_out:'超时',startup_failure:'启动失败',action_required:'需处理',failure:'执行失败'}[job.conclusion])+'）');
+          });
+          const checkId = badJobs.map(job => String(job.check_run_url || '').split('/').at(-1)).find(id => /^[1-9]\d*$/.test(id));
+          let reason = '';
+          if (checkId) {
+            try {
+              const response = await fetch(api+'/check-runs/'+checkId+'/annotations?per_page=20',
+                {headers,signal:AbortSignal.timeout(8000),redirect:'error'});
+              if (response.ok) {
+                const annotations = await response.json();
+                // Publish only fixed explanations or a numeric exit code; annotations may contain private details.
+                const messages = annotations.filter(item => item.annotation_level === 'failure').map(item => item.message).join(' ');
+                reason = [
+                  [/host key verification failed/i,'SSH 主机密钥校验失败'],
+                  [/permission denied|access denied/i,'权限不足'],
+                  [/no space left on device/i,'磁盘空间不足'],
+                  [/could not resolve|enotfound|eai_again/i,'域名解析失败'],
+                  [/timed out|etimedout/i,'操作超时'],
+                  [/connection refused/i,'目标拒绝连接'],
+                ].find(([pattern]) => pattern.test(messages))?.[1] || '';
+                const exit = /process completed with exit code ([1-9]\d{0,4})\b/i.exec(messages)?.[1];
+                if (!reason && exit) reason = '进程退出码 '+exit;
+              }
+            } catch { console.warn('::warning::GitHub failure annotations were unavailable.'); }
+          }
+          const fallback = {timed_out:'GitHub Actions 运行超时。',startup_failure:'GitHub Actions 未能启动工作流。',
+            action_required:'GitHub Actions 需要人工处理。',cancelled:'运行被取消，部署可能未完成。',failure:'工作流失败，GitHub 未提供具体失败步骤。'};
+          const start = Date.parse(run.run_started_at || run.created_at);
+          const finish = Math.max(start, ...jobs.map(job => Date.parse(job.completed_at)).filter(Number.isFinite));
+          const commit = run.head_commit;
+          const short = (value, length) => typeof value === 'string' ? value.slice(0, length).toWellFormed() : '';
+          const payload = {
+            project, run_id:String(run.id), attempt, sha:run.head_sha,
+            message:short(commit?.message?.trim().split(/\r?\n/,1)[0],300),
+            author:short(commit?.author?.name || commit?.author?.username,120),
+            actor:short(run.triggering_actor?.login || run.actor?.login,120),
+            started_at:new Date(start).toISOString(),
+            finished_at:new Date(finish > start ? finish : Math.max(start,Date.parse(run.updated_at))).toISOString(),
+            status:run.conclusion === 'success' || run.conclusion === 'cancelled' ? run.conclusion : 'failure',
+            failure:short([details.join('；') || fallback[run.conclusion],reason].filter(Boolean).join(' · '),300),
+          };
+
+          // The backend deduplicates a repository + run + attempt, so transport retries are safe.
+          for (let index=0; index<5; index++) {
+            let status = 503;
+            try {
+              const response = await fetch(new URL('/api/ci/deployments', origin), {
+                method:'POST', headers:{Authorization:'Bearer '+process.env.CI_DEPLOY_TOKEN,'Content-Type':'application/json'},
+                body:JSON.stringify(payload), signal:AbortSignal.timeout(15000), redirect:'error',
+              });
+              status=response.status;
+              await response.body?.cancel();
+            } catch {
+              console.warn('Deployment notification endpoint could not be reached.');
+            }
+            if (status === 202) { console.log('Deployment result accepted.'); break; }
+            if (status < 500 && status !== 429 || index === 4) throw new Error('Deployment notification rejected (HTTP '+status+').');
+            await delay(5000 * (index+1));
+          }
+          JS

@@ -1,8 +1,9 @@
 // tree2/js/api.js —— 数据层：清单、存储状态、上传、取文件字节。
 //
-// 地址约定（两套后端都支持，页面只认 API_BASE）：
-//   /api/public/tree2/...                —— 生产：Astro 静态站 + 服务端反向代理（server/tree2.mjs）
+// 地址约定（页面只认 API_BASE）：
+//   https://files.example.com         —— 生产：静态站与文件服务同源（nginx 反代 /api/tree2/）
 //   http://127.0.0.1:8787/api/tree2/...  —— 本地：node scripts/tree2-files-server.mjs（Flyfish / 本地调试）
+// 管理操作另有第三条路：console.example.com 的 /api/tree2/* 经 backend 代理转发，不走这里。
 // 页面在 URL 里带 ?api=… 即可切换（固定到 localStorage），见 apiBase()。
 
 const LS_API = 'tree2.api';
@@ -87,7 +88,7 @@ async function request(path, { method = 'GET', body, signal, timeout = 15000 } =
       headers,
       body: body instanceof Blob ? body : body === undefined ? undefined : JSON.stringify(body),
       signal: ctl.signal,
-      // 不写 cookie：站点是静态的，写操作靠 X-Tree2 + 同源校验，避免第三方站点借 cookie 上传
+      // 不写 cookie：站点是静态的，写操作靠 Bearer 口令鉴权，避免第三方站点借 cookie 上传
       credentials: 'omit',
       cache: 'no-cache',
     });
