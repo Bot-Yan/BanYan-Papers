@@ -1,7 +1,10 @@
 // tree2 Service Worker：可安装 + 离线浏览目录（文件字节仍需联网）
 // 清单/页面网络优先（发布后学生立刻看到新版），静态资源缓存优先（秒开）
-const CACHE = 'tree2-pwa-v5';
-const SHELL = ['/', '/index.html', '/css/tree2.css', '/js/app.js', '/js/api.js', '/js/preview.js', '/assets/paw.svg', '/assets/facivon.svg'];
+const CACHE = 'tree2-pwa-v6';
+// js/css 不进 SHELL：页面引用它们时都带 ?v= 版本参数（js/app.js?v=…），预缓存的
+// 无版本路径是不同的缓存键，永远命中不了，等于白白多下载一份。版本化资源的
+// 更新靠改 ?v=（缓存优先策略下新请求键不同，自然拿到新文件）。
+const SHELL = ['/', '/index.html', '/assets/paw.svg', '/assets/facivon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

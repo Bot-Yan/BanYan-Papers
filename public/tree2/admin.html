@@ -426,10 +426,26 @@
     var li = row(file.name, 'run', '校验中…');
     return hashFile(file, function (p) { setRow(li, 'run', '校验中…', p); }).then(function (sha) {
       var key = keyFor(sha, file.name);
+      function commit(payload) {
+        return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
+          body: JSON.stringify(payload),
+        }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
+          if (res.ok === 200 && res.d.key) {
+            setRow(li, 'done', '已入库 → ' + folder() + '/' + file.name, 1);
+            loadYear(year());
+            loadStats();
+          }
+          else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
+        });
+      }
       return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '?h=' + sha).then(function (r) { return r.json(); }).then(function (probe) {
         if (probe && probe.exists) {
-          setRow(li, 'dup', '秒传：库里已有相同内容（' + key + '）', 1);
-          return;
+          // 秒传：内容已在库（parts:0 走服务端短路）。此前只提示不挂清单，
+          // 同内容换个名字/目录再传会永远进不了清单
+          setRow(li, 'run', '秒传：库里已有相同内容，直接挂到清单', 1);
+          return commit({ key: key, sha256: sha, size: file.size, name: file.name, parts: 0, folder: folder() });
         }
         var n = Math.max(1, Math.ceil(file.size / PART));
         var i = 0;
@@ -446,18 +462,7 @@
         }
         return next().then(function () {
           setRow(li, 'run', '合并校验…', 1);
-          return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '/commit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
-            body: JSON.stringify({ key: key, sha256: sha, size: file.size, name: file.name, parts: n, folder: folder() }),
-          }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
-            if (res.ok === 200 && res.d.key) {
-              setRow(li, 'done', '已入库 → ' + folder() + '/' + file.name, 1);
-              loadYear(year());
-              loadStats();
-            }
-            else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
-          });
+          return commit({ key: key, sha256: sha, size: file.size, name: file.name, parts: n, folder: folder() });
         });
       });
     }).catch(function (e) {
@@ -488,35 +493,7 @@
   });
   $('year').addEventListener('change', function () { loadYear(this.value); });
 
-  // ---- 热门资料排行 ----
-  function loadStats() {
-    var t = token();
-    var ol = document.getElementById('stats');
-    if (!ol) return;
-    if (!t) {
-      ol.innerHTML = '<li style="color:#8a7f6e">在上方填好口令后，排行会自动出现</li>';
-      return;
-    }
-    ol.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
-    fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': t } })
-      .then(function (r) {
-        if (!r.ok) throw new Error(r.status === 401 ? '口令不对：检查是否复制完整' : 'HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function (d) {
-        if (!d.rows || !d.rows.length) {
-          ol.innerHTML = '<li style="color:#8a7f6e">还没有统计数据（浏览/下载后会自动累计）</li>';
-          return;
-        }
-        ol.innerHTML = d.rows.map(function (x) {
-          var nm = String(x.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          return '<li><strong>' + nm + '</strong>（' + x.season + ' 届）— 下载 ' + x.downloads + ' · 浏览 ' + x.visits + '</li>';
-        }).join('');
-      })
-      .catch(function (e) {
-        ol.innerHTML = '<li style="color:#8a7f6e">载入失败：' + String(e && e.message || e) + '</li>';
-      });
-  }
+  // ---- 热门资料排行（loadStats 定义在上方脚本块里；页面打开时先拉一次） ----
   loadStats();
 </script>
 <script>

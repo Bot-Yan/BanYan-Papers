@@ -6,8 +6,8 @@
 //   * 在线状态来自 /api/tree2/storage：有真实字节的文件才能预览/下载，其余走网盘兜底。
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
-import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261106d';
-import { kindOf, canRender, extOf, render } from './preview.js?v=20261112b';
+import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115a';
+import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115a';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -1045,6 +1045,7 @@ let viewerTicket = 0;
 let currentUrl = null;
 
 async function openViewer(file, parent, noPush) {
+  disposePdf(); // 上一个预览若是 PDF，先把它的内存/监听器释放掉
   const box = $('#viewer');
   if (!box) return;
   const ticket = ++viewerTicket;
@@ -1115,6 +1116,7 @@ function closeViewer() {
   if (!box || box.dataset.open !== 'true') return; // 幂等：popstate 与手动关闭只走一次
   box.dataset.open = 'false';
   document.body.style.overflow = '';
+  disposePdf(); // 抽屉关了，PDF 的文档和监听器一并释放
   $('#v-body').innerHTML = '';
   currentUrl = null;
 }
@@ -1149,15 +1151,18 @@ const isNewFile = (f) => {
   return Number.isFinite(d) && Date.now() - d <= 7 * 86400000;
 };
 
+// 「已复制」按钮反馈。放在模块级：copyText 和 copyTextFallback 两条路径都要用
+// （原先 done 定义在 copyText 内部，降级路径里调它是 ReferenceError）。
+function copyDone(btn) {
+  if (!btn) return;
+  const old = btn.textContent;
+  btn.textContent = '已复制';
+  setTimeout(() => (btn.textContent = old), 1200);
+}
+
 function copyText(text, btn) {
-  const done = () => {
-    if (!btn) return;
-    const old = btn.textContent;
-    btn.textContent = '已复制';
-    setTimeout(() => (btn.textContent = old), 1200);
-  };
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(done, () => copyTextFallback(text, btn));
+    navigator.clipboard.writeText(text).then(() => copyDone(btn), () => copyTextFallback(text, btn));
   } else copyTextFallback(text, btn);
 }
 
@@ -1170,7 +1175,7 @@ function copyTextFallback(text, btn) {
   ta.select();
   try {
     document.execCommand('copy');
-    done();
+    copyDone(btn);
   } catch {
     toast('复制失败，长按链接手动复制', true);
   }
@@ -1384,15 +1389,19 @@ async function diagnose() {
     say('GET /seasons', `请求失败 ${e.message}`, true);
   }
   if (seasons) say('届别', `${seasons.seasons?.length || 0} 个：${(seasons.seasons || []).map((s) => s.id).join(', ')}`);
+  // 检查最新一届的清单，别硬编码 2026——2027 届上线后硬编码就查了个空
+  const latest = seasons && seasons.seasons && seasons.seasons.length
+    ? String(seasons.seasons.map((s) => s.id).sort().pop())
+    : '2026';
   try {
-    const r = await fetch(`${apiBase()}/api/tree2/seasons/2026`, { cache: 'no-cache', credentials: 'omit' });
-    say('GET /seasons/2026', `HTTP ${r.status}`, !r.ok);
+    const r = await fetch(`${apiBase()}/api/tree2/seasons/${encodeURIComponent(latest)}`, { cache: 'no-cache', credentials: 'omit' });
+    say(`GET /seasons/${latest}`, `HTTP ${r.status}`, !r.ok);
     if (r.ok) {
       const m = await r.json();
       say('清单', `${m.batches?.length} 批 / ${m.totals?.files} 文件`);
     }
   } catch (e) {
-    say('GET /seasons/2026', `请求失败 ${e.message}`, true);
+    say(`GET /seasons/${latest}`, `请求失败 ${e.message}`, true);
   }
   say('state.manifest', state.manifest ? '已加载' : '空', !state.manifest);
   say('state.storage', `${state.storage?.keys?.size ?? 0} 个对象`);

@@ -309,7 +309,21 @@ function audioPlayer(box, url, name) {
 
 // ---------------------------------------------------------------- PDF（pdf.js）
 
+/**
+ * 上一份 PDF 的会话回收：pdf.js 文档（几十 MB 的 ArrayBuffer）、window 监听器、
+ * 两个 Observer。不回收的话，连开几十份卷子内存会一直涨。
+ * 渲染新 PDF 前自动清上一个；关闭预览抽屉时由 app.js 调 disposePdf() 主动清。
+ */
+let pdfCleanup = null;
+export function disposePdf() {
+  if (pdfCleanup) {
+    pdfCleanup();
+    pdfCleanup = null;
+  }
+}
+
 async function pdf(box, blob, note) {
+  disposePdf(); // 换着看 PDF/其它文件时，上一个文档的内存和监听器都还在
   await script(`${V}/pdfjs-3.11.174/pdf.min.js`);
   const lib = window.pdfjsLib;
   if (!lib) throw new Error('pdf.js 没有正确加载');
@@ -425,9 +439,10 @@ async function pdf(box, blob, note) {
   window.addEventListener('orientationchange', onResize);
   // 容器本身变宽/变窄（抽屉布局变化、横竖屏切换）也要按新宽度重画，
   // 否则画布会被 CSS 拉伸 —— 那就是"糊"的来源。
+  let ro = null;
   if ('ResizeObserver' in window) {
     let lastW = view.clientWidth;
-    const ro = new ResizeObserver(() => {
+    ro = new ResizeObserver(() => {
       const w = view.clientWidth;
       if (!w || Math.abs(w - lastW) < 8) return;
       lastW = w;
@@ -435,6 +450,14 @@ async function pdf(box, blob, note) {
     });
     ro.observe(view);
   }
+
+  pdfCleanup = () => {
+    window.removeEventListener('resize', onResize);
+    window.removeEventListener('orientationchange', onResize);
+    if (io) io.disconnect();
+    if (ro) ro.disconnect();
+    try { doc.destroy(); } catch { /* 已销毁/渲染中 */ }
+  };
 
   if (!pages.length) note('这个 PDF 没有页面。');
 }

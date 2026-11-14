@@ -42,6 +42,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import process from 'node:process';
 import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -137,8 +138,13 @@ class HttpError extends Error {
 
 
 // ---------------------------------------------------------------- Navidrome 音频直通
-// 预览音频时不再由本服务吐字节，而是 302 到 Navidrome 的 Subsonic 流接口：
-// 浏览器自带 Range、拖动进度、以及服务端转码都由 Navidrome 负责。
+// 音频预览的字节来自 Navidrome（Subsonic 流接口），本服务有两条路：
+//   ① 流式代理（推荐）：navidrome.json 配了 internal（Navidrome 的内网地址，如
+//      http://127.0.0.1:4533）时，本服务自己去拉流再吐给浏览器——Subsonic 凭证
+//      （t=md5(password+salt)）只在服务器内部出现，不进浏览器，泄露面归零。
+//      Range 透传给 Navidrome，拖动进度不受影响；流量过一遍本服务，同机部署无所谓。
+//   ② 302 兜底：没配 internal 时维持原状——302 把带凭证的流地址直接给浏览器，
+//      任何访客都能拿到一把可长期使用的音乐库 API 凭证，建议尽快配上 internal。
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac']);
 const ND_CFG_FILE = path.join(HERE, '..', 'data', 'navidrome.json');
 const ND_MAP_FILE = path.join(HERE, '..', 'data', 'audio-map.json');
@@ -183,6 +189,44 @@ function navidromeStreamUrlById(id, cfgOverride) {
     u: cfg.user, t: token, s: salt, v: '1.16.1', c: 'tree2', id,
   });
   return `${cfg.base || '/music'}/rest/stream.view?${qs.toString()}`;
+}
+
+/** 配了 internal（内网地址）时，返回服务端可直连的流地址；没配返回 null（走 302 兜底）。 */
+async function navidromeProxyStreamUrl(sha) {
+  const cfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
+  const internal = cfg && (cfg.internal || cfg.internalBase);
+  if (!internal || !cfg.user || !cfg.password) return null;
+  const map = await readJsonCached(ND_MAP_FILE, 'map', 'mapMtime');
+  const id = map && map[sha];
+  if (!id) return null;
+  const salt = crypto.randomBytes(6).toString('hex');
+  const token = crypto.createHash('md5').update(cfg.password + salt).digest('hex');
+  const qs = new URLSearchParams({
+    u: cfg.user, t: token, s: salt, v: '1.16.1', c: 'tree2', id,
+  });
+  return `${String(internal).replace(/\/+$/, '')}/rest/stream.view?${qs.toString()}`;
+}
+
+/**
+ * 服务端代理 Navidrome 的音频流：Range/206 透传（拖动进度靠它），
+ * 上游的分块 pipe 给浏览器，字节不在服务端落盘、不进内存。
+ */
+async function proxyAudioStream(req, res, upstreamUrl) {
+  const headers = {};
+  if (req.headers.range) headers.Range = req.headers.range;
+  const upstream = await fetch(upstreamUrl, { headers, redirect: 'follow' });
+  const h = {
+    'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+  };
+  const contentRange = upstream.headers.get('content-range');
+  if (contentRange) h['Content-Range'] = contentRange;
+  const contentLength = upstream.headers.get('content-length');
+  if (contentLength) h['Content-Length'] = contentLength;
+  res.writeHead(upstream.status, { ...cors(req), ...h });
+  if (req.method === 'HEAD' || !upstream.body) return res.end();
+  await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {});
 }
 
 // ------------------------------------------------------------- 旧版分享注册表（只读兼容）
@@ -309,6 +353,25 @@ async function readManifestFile(year) {
   return JSON.parse(await fsp.readFile(path.join(cfg.data, `${safeYear(year)}.json`), 'utf8'));
 }
 
+// ---- 清单树统计（唯一实现） ----
+// countFiles/countDirs/sumBytes 之前在 remove / rename / batch / attach 里各抄了一份，
+// 已经抄丢过东西（rename 忘了更新 totals）；统一走下面这几个 + recalcManifestStats。
+const countTreeFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countTreeFiles(c) : 1), 0);
+const countTreeDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countTreeDirs(c) + 1 : 0), 0);
+const sumTreeBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumTreeBytes(c) : c.s || 0), 0);
+
+/** 写盘前统一重算：每个批次的 files/dirs/bytes + 全届 totals。 */
+function recalcManifestStats(m) {
+  for (const b of m.batches || []) {
+    b.files = countTreeFiles(b.tree);
+    b.dirs = countTreeDirs(b.tree);
+    b.bytes = sumTreeBytes(b.tree);
+  }
+  m.totals = m.totals || {};
+  m.totals.files = (m.batches || []).reduce((n, b) => n + b.files, 0);
+  m.totals.bytes = (m.batches || []).reduce((n, b) => n + b.bytes, 0);
+}
+
 // ---------------------------------------------------------------- 接口：清单
 
 route('GET', /^\/api\/tree2\/seasons$/, async (req, res) => {
@@ -375,13 +438,17 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
   const key = safeKey(url.searchParams.get('k'));
   const name = String(url.searchParams.get('n') || path.basename(key)).replace(/[\r\n"]/g, '');
   const download = url.searchParams.get('download') === '1';
-  if (download) bumpStat(key, 'dl'); // 下载计数（排行用）
 
-  // 音频预览：转给 Navidrome（下载不受影响，走下面的本地字节流）
+  // 音频预览：优先服务端代理 Navidrome 流（凭证不出服务器）；
+  // 没配 internal 才回退 302（带着 Subsonic 凭证，见文件头「Navidrome 音频直通」注释）。
+  // 下载不受影响，走下面的本地字节流。
   const audioExt = path.extname(key).toLowerCase();
   if (AUDIO_EXT.has(audioExt) && !download) {
+    const sha = path.basename(key, audioExt);
+    const proxyUrl = await navidromeProxyStreamUrl(sha);
+    if (proxyUrl) return proxyAudioStream(req, res, proxyUrl);
     // 音频预览一律交给 Navidrome；映射缺失才回 404（navidrome-sync 每小时补一次）
-    const target = await navidromeStreamUrl(path.basename(key, audioExt));
+    const target = await navidromeStreamUrl(sha);
     if (!target) throw new HttpError(404, '该音频还没同步到 Navidrome，稍后再试（每小时同步一次）');
     res.writeHead(302, { ...cors(req), Location: target, 'Cache-Control': 'no-store' });
     return res.end();
@@ -397,6 +464,8 @@ async function serveObjectBytes(req, res, key, name, { download = false } = {}) 
   const file = objPath(key);
   const st = await fsp.stat(file).catch(() => null);
   if (!st || !st.isFile()) throw new HttpError(404, '文件还没入库');
+  // 下载计数放在确认文件真实存在之后：此前在路由层就 +1，探测不存在的文件也计了数
+  if (download) bumpStat(key, 'dl');
 
   const ext = path.extname(key).toLowerCase();
   const headers = {
@@ -701,30 +770,23 @@ ${preview}
 <p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
 </main></body>
 <script>
+// 倍速记忆：黑胶页（music-custom.js）把倍速存在 localStorage['t2Rate']，
+// 落地页的音频沿用同一倍速。这里只应用不切换——落地页没有倍速按钮，
+// 之前留下的按钮逻辑操作的是不存在的 [data-rate] 元素，已裁掉。
 (function () {
-  var KEY = 't2Rate';
-  var target = parseFloat(localStorage.getItem(KEY)) || 1;
-  function apply() {
-    document.querySelectorAll('[data-rate]').forEach(function (b) {
-      var r = parseFloat(b.getAttribute('data-rate'));
-      var on = Math.abs(r - target) < 0.01;
-      b.style.background = on ? '#1e3a5f' : '#fff';
-      b.style.color = on ? '#fff' : '#1e3a5f';
-    });
-    document.querySelectorAll('audio').forEach(function (a) { try { a.playbackRate = target; } catch (e) {} });
-  }
-  document.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-rate]');
-    if (!b) return;
-    target = parseFloat(b.getAttribute('data-rate')) || 1;
-    try { localStorage.setItem(KEY, String(target)); } catch (err) {}
-    apply();
-  });
-  apply();
+  var target = parseFloat(localStorage.getItem('t2Rate')) || 1;
+  document.querySelectorAll('audio').forEach(function (a) { try { a.playbackRate = target; } catch (e) {} });
 })();
 </script></html>`;
   res.writeHead(200, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(html);
+}
+
+/** 清单里最新的届别年份（分享落地页对不在清单里的键兜底用，别硬编码 2026）。 */
+async function latestManifestYear() {
+  const files = await fsp.readdir(cfg.data).catch(() => []);
+  const years = files.filter((f) => /^\d{4}\.json$/.test(f)).map((f) => f.slice(0, 4)).sort();
+  return years[years.length - 1] || '';
 }
 
 // 确定性分享链接：/s/<存储键>
@@ -739,7 +801,7 @@ route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (re
   const sha = path.basename(key, ext);
   const meta = (await keyMetaMap()).get(key);
   const name = (meta && meta.name) || path.basename(key);
-  const season = (meta && meta.season) || '2026';
+  const season = (meta && meta.season) || (await latestManifestYear()) || '2026';
 
   if (AUDIO_EXT.has(ext)) {
     const am = (await readJsonCached(ND_MAP_FILE, 'map', 'mapMtime')) || {};
@@ -791,8 +853,8 @@ route('GET', /^\/s\/([A-Za-z0-9]{4,64})$/, async (req, res, [, id]) => {
 
 // 确定性文件夹分享：/d/<届>/<批次/子目录…> —— 同一个文件夹所有人同一个链接。
 // 落地页列出子文件夹（可继续点进去）与全部文件（预览/下载）。
-const countNodeFiles = (node) => (node.c || []).reduce((n, c) => n + (c.t === 'd' ? countNodeFiles(c) : 1), 0);
-const sumNodeBytes = (node) => (node.c || []).reduce((n, c) => n + (c.t === 'd' ? sumNodeBytes(c) : c.s || 0), 0);
+const countNodeFiles = countTreeFiles;
+const sumNodeBytes = sumTreeBytes;
 
 function sendFolderLanding(req, res, { year, segs, node, batch }) {
   const enc = (segs2) => segs2.map((s) => encodeURIComponent(s)).join('/');
@@ -894,6 +956,17 @@ const crc32File = (file) =>
     stream.on('end', () => resolve((c ^ -1) >>> 0));
     stream.on('error', reject);
   });
+// 对象按内容寻址、不可变：同一存储键的 CRC 永远一样，缓存住省得每次打包下载都全量重读
+const CRC_CACHE = new Map();
+const crc32FileCached = (file, storageKey) => {
+  const hit = CRC_CACHE.get(storageKey);
+  if (hit !== undefined) return Promise.resolve(hit);
+  return crc32File(file).then((crc) => {
+    if (CRC_CACHE.size > 5000) CRC_CACHE.clear(); // 简单封顶，防极端情况下无限增长
+    CRC_CACHE.set(storageKey, crc);
+    return crc;
+  });
+};
 const zipDosTime = (d) => ({
   time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
   date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
@@ -979,7 +1052,7 @@ route('GET', /^\/api\/tree2\/zip\/([^/]+)\/(.+)$/, async (req, res, m) => {
   let offset = 0;
   const central = [];
   for (const e of entries) {
-    const crc = await crc32File(e.abs);
+    const crc = await crc32FileCached(e.abs, e.k);
     const h = Buffer.alloc(30);
     h.write('PK\x03\x04', 0, 'latin1');
     h.writeUInt16LE(20, 4);       // 版本
@@ -1094,7 +1167,6 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     if (!node) throw new HttpError(404, '子目录不存在');
   }
 
-  const countF = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countF(c) : 1), 0);
   // 收集子树里所有带存储键的文件节点（过滤前），供清单写盘后的引用检查做垃圾回收
   const collectKeys = (n, out = []) => {
     for (const c of n.c || []) {
@@ -1115,29 +1187,19 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     if (!removedFiles) throw new HttpError(404, '文件不存在');
     removedName = name;
   } else if (parentNode) {
-    removedFiles = countF(node);
+    removedFiles = countTreeFiles(node);
     removedKeys = collectKeys(node);
     parentNode.c = (parentNode.c || []).filter((c) => c.n !== segs[segs.length - 1]);
     removedName = segs[segs.length - 1];
   } else {
-    removedFiles = countF(node);
+    removedFiles = countTreeFiles(node);
     removedKeys = collectKeys(node);
     manifest.batches = manifest.batches.filter((b) => b.name !== segs[0]);
     removedName = segs[0];
   }
 
   // 重新统计
-  const countFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countFiles(c) : 1), 0);
-  const countDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
-  const sumBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
-  for (const b of manifest.batches || []) {
-    b.files = countFiles(b.tree);
-    b.dirs = countDirs(b.tree);
-    b.bytes = sumBytes(b.tree);
-  }
-  manifest.totals = manifest.totals || {};
-  manifest.totals.files = (manifest.batches || []).reduce((n, b) => n + b.files, 0);
-  manifest.totals.bytes = (manifest.batches || []).reduce((n, b) => n + b.bytes, 0);
+  recalcManifestStats(manifest);
 
   const tmp = `${file}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(manifest, null, 2));
@@ -1250,19 +1312,14 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
     // 阶段/类型/日期都从名字推导：改名后必须重算，否则前端按 stage 分组会挂在旧阶段下
     batch.stage = t2StageOf(newName);
     batch.type = t2TypeOf(newName);
-    batch.date = (/(d{4}[.-年]d{1,2})/.exec(newName) || [, ''])[1];
+    // 日期从名字里提（如 2026.12 / 2025-8 / 2026年3月）；此前正则写成 d{4}（少了反斜杠），
+    // 永远匹配不上，每次重命名都把 date 清空
+    batch.date = (/(\d{4}[.\-年]\d{1,2})/.exec(newName) || [, ''])[1];
     renamed = 'batch';
   }
 
-  // 重新统计（与 remove 同款）
-  const countFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countFiles(c) : 1), 0);
-  const countDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
-  const sumBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
-  for (const b of manifest.batches || []) {
-    b.files = countFiles(b.tree);
-    b.dirs = countDirs(b.tree);
-    b.bytes = sumBytes(b.tree);
-  }
+  // 重新统计（与 remove 同款；此前漏了 totals，首页合计会停在旧数字）
+  recalcManifestStats(manifest);
 
   const tmp = `${file}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(manifest, null, 2));
@@ -1298,13 +1355,7 @@ route('POST', /^\/api\/tree2\/batch$/, async (req, res) => {
     tree: { n: name, t: 'd', c: [] },
   });
   m.batches.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }));
-  const countFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countFiles(c) : 1), 0);
-  const countDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
-  const sumBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
-  for (const b of m.batches) { b.files = countFiles(b.tree); b.dirs = countDirs(b.tree); b.bytes = sumBytes(b.tree); }
-  m.totals = m.totals || {};
-  m.totals.files = m.batches.reduce((n2, b) => n2 + b.files, 0);
-  m.totals.bytes = m.batches.reduce((n2, b) => n2 + b.bytes, 0);
+  recalcManifestStats(m); // 统一走共享实现（batch / attach / remove / rename 同款）
   const tmp = file + '.' + process.pid + '.tmp';
   await fsp.writeFile(tmp, JSON.stringify(m, null, 2));
   await fsp.rename(tmp, file);
@@ -1413,10 +1464,10 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   safeYear(year);
   const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}');
   const key = safeKey(body.key);
-  const parts = Number(body.parts || 1);
+  const parts = Number(body.parts ?? 0);
   const expect = String(body.sha256 || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(expect)) throw new HttpError(400, 'sha256 不合法');
-  if (!Number.isInteger(parts) || parts < 1 || parts > 4096) throw new HttpError(400, '分片数不合法');
+  if (!Number.isInteger(parts) || parts < 0 || parts > 4096) throw new HttpError(400, '分片数不合法');
   if (auth.kind === 'once') {
     const firstSeg = String(body.folder || '').split('/').filter(Boolean)[0] || '';
     if (!auth.rec.batches.includes(firstSeg)) {
@@ -1424,42 +1475,60 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
     }
   }
 
-  const dir = path.join(TMP, key.replace('/', '_'));
-  const pieces = [];
-  for (let i = 0; i < parts; i++) {
-    const p = path.join(dir, `${i}.part`);
-    const st = await fsp.stat(p).catch(() => null);
-    if (!st) throw new HttpError(409, `缺第 ${i} 片，请重传`);
-    pieces.push(p);
+  // 存储键 = sha256 + 扩展名：键与声明的哈希必须一致，否则挂进清单的名实不符
+  if (path.basename(key, path.extname(key)) !== expect) {
+    throw new HttpError(400, '存储键与 sha256 不一致（key 应为 <前2位>/<sha256>.<ext>）');
   }
 
-  // 边合并边算哈希：整个文件不进内存
   const final = objPath(key);
   await fsp.mkdir(path.dirname(final), { recursive: true });
-  const tmpOut = `${final}.${process.pid}.tmp`;
-  const out = fs.createWriteStream(tmpOut);
-  const hash = createHash('sha256');
-  for (const p of pieces) {
-    await new Promise((resolve, reject) => {
-      const r = fs.createReadStream(p);
-      r.on('data', (c) => hash.update(c));
-      r.on('error', reject);
-      r.on('end', resolve);
-      r.pipe(out, { end: false });
-    });
+
+  let got = expect;
+  if (parts === 0) {
+    // 秒传：客户端探测到内容已在库，跳过分片直接挂清单。
+    // 内容寻址的键即哈希，对象存在就等于内容匹配；不存在则让客户端走分片上传。
+    const existing = await fsp.stat(final).catch(() => null);
+    if (!existing || !existing.isFile()) {
+      throw new HttpError(409, '秒传失败：该内容还不在库里，请按分片上传');
+    }
+  } else {
+    const dir = path.join(TMP, key.replace('/', '_'));
+    const pieces = [];
+    for (let i = 0; i < parts; i++) {
+      const p = path.join(dir, `${i}.part`);
+      const st = await fsp.stat(p).catch(() => null);
+      if (!st) throw new HttpError(409, `缺第 ${i} 片，请重传`);
+      pieces.push(p);
+    }
+
+    // 边合并边算哈希：整个文件不进内存
+    const tmpOut = `${final}.${process.pid}.tmp`;
+    const out = fs.createWriteStream(tmpOut);
+    const hash = createHash('sha256');
+    for (const p of pieces) {
+      await new Promise((resolve, reject) => {
+        const r = fs.createReadStream(p);
+        r.on('data', (c) => hash.update(c));
+        r.on('error', reject);
+        r.on('end', resolve);
+        r.pipe(out, { end: false });
+      });
+    }
+    await new Promise((r) => out.end(r));
+    got = hash.digest('hex');
+    if (got !== expect) {
+      await fsp.rm(tmpOut, { force: true });
+      throw new HttpError(422, '内容校验失败：合并后的 sha256 与上传前不一致');
+    }
+    await fsp.rename(tmpOut, final);
+    await fsp.rm(dir, { recursive: true, force: true });
   }
-  await new Promise((r) => out.end(r));
-  const got = hash.digest('hex');
-  if (got !== expect) {
-    await fsp.rm(tmpOut, { force: true });
-    throw new HttpError(422, '内容校验失败：合并后的 sha256 与上传前不一致');
-  }
-  await fsp.rename(tmpOut, final);
-  await fsp.rm(dir, { recursive: true, force: true });
 
   // 把文件挂到清单里：folder 是批次目录（如 "A1福州一检（2025.8）…"），name 是文件名
-  manifestCache.delete(year);
   const attached = await attachToManifest(year, key, { ...body, sha256: got });
+  // 写完清单再清缓存：之前放在 attach 之前，并发请求会把旧清单重新填进 30 秒缓存，
+  // 首页「已入库」的绿点会跟着延迟半分钟
+  manifestCache.delete(year);
   // once 顾客口令：入库成功才计一次
   if (auth.kind === 'once') {
     const list = await loadCTokens();
@@ -1512,7 +1581,10 @@ async function attachToManifest(year, key, body) {
   let parent = null;
   let batch = null;
   if (!segs.length) {
-    parent = { c: (m.batches || []).map((b) => b.tree) };
+    // folder 为空说明没指定批次：对象字节已入库，但清单无处可挂。
+    // 如实返回 false —— 旧实现把文件挂到一个「合成父节点」（不落在任何 batch.tree 上），
+    // 写盘后文件静默丢失却仍报 attached:true。
+    return false;
   } else {
     // 批次不存在就现场建一个（元数据从名字推导，规则同 build-tree2-index）
     batch = (m.batches || []).find((b) => b.name === segs[0]);
@@ -1556,17 +1628,7 @@ async function attachToManifest(year, key, body) {
   if (batch) batch.subj = [...new Set([...(batch.subj || []), ...T2_SUBJECTS.filter((s) => name.includes(s))])];
 
   // 更新统计，页面刷新后数字对得上
-  const countFiles = (node) => (node.c || []).reduce((n, c) => n + (c.t === 'd' ? countFiles(c) : 1), 0);
-  const countDirs = (node) => (node.c || []).reduce((n, c) => n + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
-  const sumBytes = (node) => (node.c || []).reduce((n, c) => n + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
-  for (const b of m.batches || []) {
-    b.files = countFiles(b.tree);
-    b.dirs = countDirs(b.tree);
-    b.bytes = sumBytes(b.tree);
-  }
-  m.totals = m.totals || {};
-  m.totals.files = (m.batches || []).reduce((n, b) => n + b.files, 0);
-  m.totals.bytes = (m.batches || []).reduce((n, b) => n + b.bytes, 0);
+  recalcManifestStats(m);
   m.totals.uniqueFiles = null;
 
   const tmp = `${file}.${process.pid}.tmp`;
@@ -1600,20 +1662,15 @@ async function appendUplog(entry) {
 }
 
 async function logUpload(year, key, body, sha) {
-  try {
-    let list = [];
-    try {
-      list = JSON.parse(await fsp.readFile(UPLOG_FILE, 'utf8'));
-      if (!Array.isArray(list)) list = [];
-    } catch {}
-    list.push({ season: year, key, name: body.name || '', folder: String(body.folder || ''), sha256: sha, at: new Date().toISOString() });
-    if (list.length > 500) list = list.slice(-500);
-    const tmp = `${UPLOG_FILE}.${process.pid}.tmp`;
-    await fsp.writeFile(tmp, JSON.stringify(list, null, 1));
-    await fsp.rename(tmp, UPLOG_FILE);
-  } catch {
-    /* 日志失败不影响入库 */
-  }
+  // 与改名/删除共用同一条 uplog 追加通道（原先是 appendUplog 的复制版，条数上限还不一致）
+  await appendUplog({
+    season: year,
+    key,
+    name: body.name || '',
+    folder: String(body.folder || ''),
+    sha256: sha,
+    at: new Date().toISOString(),
+  });
 }
 
 // ---------------- 顾客上传口令（admin 在 admin.html 生成，同学在 customer.html 使用） ----------------
@@ -1795,8 +1852,26 @@ async function tree2Handler(req, res) {
 
 const server = http.createServer(tree2Handler);
 
+// ---------------- 分片临时目录 GC ----------------
+// 上传中断 / commit 校验失败会留下 tmp/<key>/<i>.part，没有任何清理的话永久堆积。
+// 分片超过 24 小时必然是被放弃的残骸（正常上传几分钟内就会 commit 走人）。
+async function sweepTmpParts() {
+  const dirs = await fsp.readdir(TMP).catch(() => []);
+  const now = Date.now();
+  for (const d of dirs) {
+    if (!/^[0-9a-f]{2}_[0-9a-f]{64}/.test(d)) continue;
+    const p = path.join(TMP, d);
+    const s = await fsp.stat(p).catch(() => null);
+    if (s && s.isDirectory() && now - s.mtimeMs > 24 * 3600 * 1000) {
+      await fsp.rm(p, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+setInterval(sweepTmpParts, 6 * 3600 * 1000); // 每 6 小时扫一遍
+
 await fsp.mkdir(OBJECTS, { recursive: true });
 await fsp.mkdir(TMP, { recursive: true });
+sweepTmpParts(); // 启动时先扫一次，清掉停机期间留下的残骸
 server.listen(cfg.port, cfg.host, () => {
   const addr = `${cfg.host}:${cfg.port}`;
   console.log(`tree2 文件服务已启动  http://${addr}`);

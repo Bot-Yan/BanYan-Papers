@@ -71,7 +71,9 @@ export class ApiError extends Error {
 async function request(path, { method = 'GET', body, signal, timeout = 15000 } = {}) {
   const headers = {};
   if (method !== 'GET') {
-    headers['X-Tree2'] = '1'; // 服务端据此要求同源写请求，挡掉跨站表单
+    // 写请求标记。真正的 CSRF 防护是 token 这个自定义头（跨站表单带不了自定义头），
+    // 服务端并不校验 X-Tree2——它只是个便于日志识别写请求的标记
+    headers['X-Tree2'] = '1';
     if (!(body instanceof Blob) && body !== undefined) headers['Content-Type'] = 'application/json';
   }
   // 地址指错时请求会一直挂着，页面就永远停在"正在读取"。给个上限，宁可报错也别装死。
@@ -118,7 +120,12 @@ export async function listSeasons() {
 
 export async function loadSeason(id) {
   if (seasonCache.has(id)) return seasonCache.get(id);
-  const p = request(`/api/tree2/seasons/${encodeURIComponent(id)}`);
+  // 失败的结果不能留在缓存里：否则网络抖一次，之后切届别/收藏夹的重试
+  // 全部立刻复用同一个 rejection，直到刷新页面。失败时移除，下次重新请求。
+  const p = request(`/api/tree2/seasons/${encodeURIComponent(id)}`).catch((e) => {
+    seasonCache.delete(id);
+    throw e;
+  });
   seasonCache.set(id, p);
   return p;
 }

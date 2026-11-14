@@ -62,7 +62,7 @@
         </div>
       </div>
       <button type="button" id="pick">选择文件（可多选；.zip 会自动解压上传）</button>
-      <p class="hint" id="who">压缩包里的子文件夹会原样变成批次里的子目录；普通文件直接进批次根目录。</p>
+      <p class="hint" id="who">压缩包里的子文件夹会原样变成批次里的子目录；普通文件直接进批次根目录。整包只有一个与压缩包同名的外层文件夹时（右键压缩文件夹的产物），这层会自动去掉，不会多套一层。</p>
       <ul id="list"></ul>
     </div>
   </div>
@@ -230,30 +230,42 @@
         return blob.arrayBuffer().then(hashBlob).then(function (sha) {
         var key = keyFor(sha, job.name);
         var size = blob.size;
-        var n = Math.max(1, Math.ceil(size / PART));
-        setRow(li, 'run', '校验通过，开始上传（' + n + ' 片）', 0.02);
-        var idx = 0;
-        function next() {
-          if (idx >= n) return Promise.resolve();
-          var start = idx * PART;
-          var piece = blob.slice(start, Math.min(size, start + PART));
-          return putPart(year, key, idx, n, piece).then(function () {
-            idx++;
-            setRow(li, 'run', '上传分片 ' + idx + '/' + n, 0.02 + 0.9 * (idx / n));
-            return next();
-          });
-        }
-        return next().then(function () {
-          setRow(li, 'run', '合并校验…', 1);
+        function commit(payload) {
           return fetch('/api/tree2/files/' + encodeURIComponent(year) + '/commit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
-            body: JSON.stringify({ key: key, sha256: sha, size: size, name: job.name, parts: n, folder: job.folder }),
+            body: JSON.stringify(payload),
           }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
             if (res.ok === 200 && res.d.key) { setRow(li, 'done', '已入库 → ' + job.folder + '/' + job.name, 1); }
             else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
           });
-        });
+        }
+        // 先探测内容是否已在库（秒传）：在就不传分片，直接让服务端把清单挂上
+        return fetch('/api/tree2/files/' + encodeURIComponent(year) + '?h=' + sha)
+          .then(function (r) { return r.json(); })
+          .then(function (probe) {
+            if (probe && probe.exists) {
+              setRow(li, 'run', '秒传：这份内容已经在库里，直接入库', 1);
+              return commit({ key: key, sha256: sha, size: size, name: job.name, parts: 0, folder: job.folder });
+            }
+            var n = Math.max(1, Math.ceil(size / PART));
+            setRow(li, 'run', '校验通过，开始上传（' + n + ' 片）', 0.02);
+            var idx = 0;
+            function next() {
+              if (idx >= n) return Promise.resolve();
+              var start = idx * PART;
+              var piece = blob.slice(start, Math.min(size, start + PART));
+              return putPart(year, key, idx, n, piece).then(function () {
+                idx++;
+                setRow(li, 'run', '上传分片 ' + idx + '/' + n, 0.02 + 0.9 * (idx / n));
+                return next();
+              });
+            }
+            return next().then(function () {
+              setRow(li, 'run', '合并校验…', 1);
+              return commit({ key: key, sha256: sha, size: size, name: job.name, parts: n, folder: job.folder });
+            });
+          });
         });
       }).catch(function (e) {
         setRow(li, 'error', '失败：' + (e && e.message ? e.message : e), 1);
@@ -277,13 +289,26 @@
       return Promise.resolve([{ name: file.name, folder: baseFolder, year: file._year, blob: file }]);
     }
     return window.JSZip.loadAsync(file).then(function (zip) {
-      var jobs = [];
       var names = Object.keys(zip.files).filter(function (n) {
         return !zip.files[n].dir && !/(^|\/)(__MACOSX|\.DS_Store)/i.test(n);
       });
       if (!names.length) throw new Error('压缩包里没有文件');
+      // 右键压缩整个文件夹得到的 zip：所有文件都在一个与压缩包同名的外层文件夹里，
+      // 原样上传会变成 批次/文件夹名/文件，多出一层。这种同名外层自动剥掉；
+      // 外层名与压缩包名不同时不剥（那是故意的子目录，比如 听力.zip）。
+      var slash = function (n) { return n.replace(/\\/g, '/'); };
+      var top = slash(names[0]).split('/')[0];
+      var base = file.name.replace(/\.zip$/i, '');
+      var wrapper =
+        top &&
+        names.every(function (n) { return slash(n).indexOf(top + '/') === 0; }) &&
+        top.toLowerCase() === base.toLowerCase()
+          ? top + '/'
+          : '';
+      var jobs = [];
       names.forEach(function (n) {
-        var clean = n.replace(/\\/g, '/').replace(/^\/+/, '');
+        var clean = slash(n).replace(/^\/+/, '');
+        if (wrapper) clean = clean.slice(wrapper.length);
         if (clean.split('/').some(function (s) { return s === '..'; })) return; // 防路径穿越
         var dir = clean.split('/').slice(0, -1).join('/');
         var fname = clean.split('/').pop();
