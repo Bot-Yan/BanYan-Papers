@@ -214,7 +214,22 @@ async function navidromeProxyStreamUrl(sha) {
 async function proxyAudioStream(req, res, upstreamUrl) {
   const headers = {};
   if (req.headers.range) headers.Range = req.headers.range;
-  const upstream = await fetch(upstreamUrl, { headers, redirect: 'follow' });
+  // 连接超时只护住「等到响应头」这一段：头到了就撤掉定时器，音乐流本身可以慢慢放，
+  // 不会被 30s 卡断；Navidrome 挂死时请求也能及时失败，不至于悬挂占住连接。
+  const upstreamCtl = new AbortController();
+  const upstreamTimer = setTimeout(() => upstreamCtl.abort(), 30000);
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, { headers, redirect: 'follow', signal: upstreamCtl.signal });
+  } catch {
+    clearTimeout(upstreamTimer);
+    throw new HttpError(502, '音频上游（Navidrome）暂时无法连接，请稍后重试');
+  }
+  clearTimeout(upstreamTimer);
+  if (!upstream.ok) {
+    await upstream.body?.cancel().catch(() => {});
+    throw new HttpError(502, `音频上游返回 HTTP ${upstream.status}（同步未完成或凭证不对）`);
+  }
   const h = {
     'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
     'Accept-Ranges': 'bytes',
@@ -967,7 +982,10 @@ const crc32FileCached = (file, storageKey) => {
   const hit = CRC_CACHE.get(storageKey);
   if (hit !== undefined) return Promise.resolve(hit);
   return crc32File(file).then((crc) => {
-    if (CRC_CACHE.size > 5000) CRC_CACHE.clear(); // 简单封顶，防极端情况下无限增长
+    if (CRC_CACHE.size > 5000) {
+      // 封顶时只淘汰最早插入的一半（Map 保持插入序），全清会惊群式重算所有 CRC
+      for (const oldest of [...CRC_CACHE.keys()].slice(0, CRC_CACHE.size - 2500)) CRC_CACHE.delete(oldest);
+    }
     CRC_CACHE.set(storageKey, crc);
     return crc;
   });
@@ -1470,9 +1488,11 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   safeYear(year);
   const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}');
   const key = safeKey(body.key);
-  const parts = Number(body.parts ?? 0);
+  const parts = Number(body.parts);
   const expect = String(body.sha256 || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(expect)) throw new HttpError(400, 'sha256 不合法');
+  // parts 必须显式给出（秒传为 0）：省略时若静默按秒传处理，调用方漏传会被当成「内容已入库」
+  if (body.parts === undefined) throw new HttpError(400, '缺少 parts（分片数，秒传传 0）');
   if (!Number.isInteger(parts) || parts < 0 || parts > 4096) throw new HttpError(400, '分片数不合法');
   if (auth.kind === 'once') {
     const firstSeg = String(body.folder || '').split('/').filter(Boolean)[0] || '';
@@ -1874,7 +1894,7 @@ async function sweepTmpParts() {
     }
   }
 }
-setInterval(sweepTmpParts, 6 * 3600 * 1000); // 每 6 小时扫一遍
+setInterval(sweepTmpParts, 6 * 3600 * 1000).unref(); // 每 6 小时扫一遍；进程存活由 server 监听兜底，定时器不必拽住事件循环
 
 await fsp.mkdir(OBJECTS, { recursive: true });
 await fsp.mkdir(TMP, { recursive: true });
