@@ -7,6 +7,8 @@ backups/
 # 清单与届别索引是运行时被服务端/发布脚本改写的（上传 commit、remove、重扫都会写），
 # 仓库里没有它们；部署绝不能用仓库快照覆盖服务器上的最新清单
 public/tree2/data/
+/public/tree2/2026.json
+/public/tree2/2027.json
 /public/tree2/2[0-9][0-9][0-9]*.json
 # 历史手工备份与临时文件，留在服务器上由人手动清理
 *.bak-*
