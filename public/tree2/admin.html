@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>上传入库 · tree2（管理员）</title>
+  <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
+  <style>
+    /* 与 tree2 资料库同一套纸张视觉 */
+    body { margin: 0; padding: 40px 18px; font: 15px/1.75 "Microsoft YaHei", "PingFang SC", sans-serif; color: #1e3a5f;
+           background: radial-gradient(900px 340px at 50% -10%, #fff6e0, rgba(255,246,224,0) 70%), #fffaf0; min-height: 100vh; box-sizing: border-box; }
+    main { max-width: 640px; margin: 0 auto; }
+    .card { background: #fff; border: 1px solid #e8dcc3; border-radius: 14px; padding: 24px; box-shadow: 0 8px 26px rgba(30,58,95,.06); }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; text-decoration: none; color: #1e3a5f; margin: 0 0 6px; font-size: 15px; }
+    .brand img { width: 22px; height: 22px; }
+    h1 { font-size: 19px; margin: 0 0 18px; }
+    label { display: block; font-size: 12.5px; color: #8a7f6e; margin: 14px 0 4px; }
+    input[type="password"], input[type="text"], select {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid #d9cdb5; border-radius: 9px;
+      font: inherit; color: inherit; background: #fffdf6;
+    }
+    .row { display: flex; gap: 10px; }
+    .row > div { flex: 1; min-width: 0; }
+    button { margin-top: 18px; width: 100%; padding: 12px 20px; border: 0; border-radius: 10px; cursor: pointer;
+             background: #1e3a5f; color: #fff; font: 700 15px/1 inherit; font-family: inherit; }
+    button:hover { background: #16314f; }
+    button:disabled { opacity: .55; cursor: default; }
+    .hint { color: #8a7f6e; font-size: 12.5px; margin: 10px 0 0; }
+    ul { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 8px; }
+    li { border: 1px solid #ece1ca; border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+    li .n { font-weight: 600; word-break: break-all; }
+    li .s { color: #8a7f6e; font-size: 12px; margin-top: 2px; }
+    li .bar { height: 5px; border-radius: 3px; background: #f0e8d8; margin-top: 6px; overflow: hidden; }
+    li .bar i { display: block; height: 100%; width: 0; background: #f59e0b; transition: width .2s; }
+    li[data-state="done"] .bar i { background: #2f9e63; }
+    li[data-state="dup"], li[data-state="skip"] { color: #8a7f6e; }
+    li[data-state="error"] { border-color: #e3a1a1; background: #fff7f5; }
+    a { color: #1e3a5f; }
+    .foot { text-align: center; color: #b0a893; font-size: 12px; margin: 16px 0 0; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <a class="brand" href="/"><img src="assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
+    <h1>上传入库（管理员）</h1>
+
+    <label for="token">上传口令（TREE2_TOKEN，保存在本浏览器）</label>
+    <input type="password" id="token" autocomplete="off" placeholder="必填">
+    <p id="gate-hint" style="margin:10px 0 0;color:#8a7f6e;font-size:13px">🔒 输入正确口令后显示管理内容</p>
+
+    <div class="row t2-gated" hidden>
+      <div>
+        <label for="year">届别</label>
+        <select id="year"></select>
+      </div>
+      <div>
+        <label for="batch">批次（挂到这个目录下）</label>
+        <select id="batch"></select>
+        <input type="text" id="newbatch" placeholder="例如：B5厦门二检（2026.11）…" style="display:none" autocomplete="off">
+        <button type="button" id="toggle-new" style="margin-top:6px;padding:6px 10px;width:auto;font:600 12px/1 inherit;background:#f0e8d8;color:#1e3a5f">＋ 新建批次</button>
+      </div>
+    </div>
+    <label class="t2-gated" hidden for="sub">子目录（可选，多个用 / 分隔）</label>
+    <input class="t2-gated" hidden type="text" id="sub" placeholder="例如：听力">
+
+    <button class="t2-gated" hidden type="button" id="go">选择文件并上传</button>
+    <p class="hint t2-gated" hidden>大文件自动切成 4 MB 分片上传；内容相同的文件只存一份（秒传）。没有想挂的批次？点「＋ 新建批次」直接起一个名字（如 B5厦门二检（2026.11）），阶段/类型会按名字自动识别。</p>
+    <ul id="list" class="t2-gated" hidden></ul>
+  </div>
+  <div class="card t2-gated" hidden style="margin-top:18px" id="ctok-card">
+    <h1 style="font-size:16px">上传口令（发给同学 / 课代表）</h1>
+    <p class="hint" style="margin:0 0 6px">口令在 <a href="/customer.html" target="_blank">customer.html</a> 使用：传到指定批次，zip 会自动解压。</p>
+    <label>每日口令（每天自动更换 · 可新建批次并上传）</label>
+    <div style="display:flex;gap:8px">
+      <input type="text" id="daily-token" readonly style="font-family:monospace;font-size:12px">
+      <button type="button" id="copy-daily" style="margin:0;width:auto;padding:8px 12px;font-size:12px">复制</button>
+    </div>
+    <label>预建空批次（先把批次建好，再勾它发口令）</label>
+    <div style="display:flex;gap:8px;align-items:stretch">
+      <input type="text" id="nb-name" placeholder="例如：C5厦门二检（2026.12）…" style="flex:1">
+      <select id="nb-year" style="width:auto"></select>
+      <button type="button" id="nb-create" style="margin:0;width:auto;padding:8px 12px;font-size:12px">新建</button>
+    </div>
+    <label>一次性口令（勾选批次，可选次数 / 时效限制）</label>
+    <div id="ct-batches" style="max-height:150px;overflow:auto;border:1px solid #e8dcc3;border-radius:9px;padding:8px;font-size:12.5px"></div>
+    <div class="row" style="margin-top:8px">
+      <div><label style="margin:6px 0 2px">次数上限（空 = 不限）</label><input type="text" id="ct-uses" placeholder="如 5"></div>
+      <div><label style="margin:6px 0 2px">有效小时数（空 = 永久）</label><input type="text" id="ct-ttl" placeholder="如 48"></div>
+    </div>
+    <button type="button" id="ct-create" style="margin-top:10px">生成一次性口令</button>
+    <div id="ct-result" style="margin-top:8px;font-size:12.5px;word-break:break-all"></div>
+    <label>已发口令</label>
+    <ul id="ct-list" style="margin:6px 0 0"></ul>
+  </div>
+  <div class="card t2-gated" hidden style="margin-top:18px" id="stats-card">
+    <h1 style="font-size:16px">热门资料（按下载/浏览次数）</h1>
+    <ol id="stats" style="margin:10px 0 0;padding-left:20px;font-size:13px">
+      <li style="color:#8a7f6e">载入中…（需要口令）</li>
+    </ol>
+    <p class="hint" style="margin-top:8px">计数来自分享落地页的浏览和各处下载；只保留前 50 名。</p>
+  </div>
+  <div class="card t2-gated" hidden style="margin-top:18px" id="del-card">
+    <h1 style="font-size:16px">整理（重命名 / 删除，要口令）</h1>
+    <p class="hint" style="margin:0 0 6px">重命名只改清单里的名字，文件本体不动；删除从清单移除，且不再被任何届/分享引用的文件本体会在服务器上一并删除（不可恢复）。先列出来，再逐个改。</p>
+    <div class="row">
+      <div>
+        <label for="del-year">届别</label>
+        <select id="del-year"></select>
+      </div>
+      <div>
+        <label for="del-batch">批次</label>
+        <select id="del-batch"></select>
+      </div>
+    </div>
+    <button type="button" id="del-list" style="margin-top:12px;padding:9px 14px;width:auto;font:600 13px/1 inherit">列出这个批次的文件</button>
+    <ol id="del-files" style="margin:12px 0 0;padding-left:20px;font-size:13px"></ol>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" id="ren-batch-btn" style="padding:8px 12px;width:auto;font:600 13px/1 inherit;border-radius:10px">✏️ 重命名批次</button>
+      <button type="button" id="del-batch-btn" style="background:#a33;border-radius:10px;font-size:13px">删除整个批次</button>
+    </div>
+  </div>
+  <p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
+</main>
+
+<script src="vendor/sha256.umd.min.js"></script>
+<script>
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var PART = 4 * 1024 * 1024;
+  var LS_TOKEN = 'tree2.token';
+
+  // 全角字母/数字/符号 → 半角（中文输入法状态下打的口令会带全角字符，肉眼难辨）
+  function normToken(v) {
+    return String(v || '')
+      .replace(/[\uFF01-\uFF5E]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+      .replace(/\u3000/g, ' ')
+      .trim();
+  }
+  function token() { return normToken($('token').value || localStorage.getItem(LS_TOKEN) || ''); }
+
+  // 口令门：没口令/口令不对时，口令框以下的管理内容全部隐藏
+  function applyGate(ok, msg) {
+    document.querySelectorAll('.t2-gated').forEach(function (el) { el.hidden = !ok; });
+    var h = document.getElementById('gate-hint');
+    if (h) { h.hidden = !!ok; if (!ok && msg) h.textContent = msg; }
+  }
+  function verifyToken(v) {
+    if (!v) { applyGate(false); return; }
+    fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': v } })
+      .then(function (r) { applyGate(r.ok, r.ok ? '' : '口令不对：检查是否复制完整'); if (r.ok) loadCtokCard(); })
+      .catch(function () { applyGate(false); });
+  }
+
+  // 口令框变化 → 保存 + 重拉排行（500ms 防抖）
+  var statsTimer = null;
+  $('token').addEventListener('input', function () {
+    var v = normToken(this.value);
+    clearTimeout(statsTimer);
+    statsTimer = setTimeout(function () {
+      if (v) localStorage.setItem(LS_TOKEN, v);
+      else localStorage.removeItem(LS_TOKEN);
+      verifyToken(v);
+      loadStats();
+    }, 500);
+  });
+  // ---- 顾客上传口令（admin 发放） ----
+  function esc2(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function copyTxt(text, btn) {
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () {
+      if (btn) { var t = btn.textContent; btn.textContent = '已复制'; setTimeout(function () { btn.textContent = t; }, 1500); }
+    }).catch(function () { alert('复制失败，请手动选择文本复制'); });
+  }
+  function loadCtokCard() {
+    fetch('/api/tree2/ctoken', { headers: { 'X-Tree2-Token': token() } }).then(function (r) { return r.json(); }).then(function (d) {
+      document.getElementById('daily-token').value = d.daily || '';
+      var ul = document.getElementById('ct-list');
+      ul.innerHTML = '';
+      (d.tokens || []).slice().reverse().forEach(function (t) {
+        var li = document.createElement('li');
+        li.style.cssText = 'font-size:12px';
+        var sp = document.createElement('span');
+        sp.style.cssText = 'word-break:break-all';
+        sp.innerHTML = '<b>' + esc2(t.token) + '</b> — ' + esc2(t.batches.join('、')).slice(0, 60) +
+          ' · 已用 ' + t.uses + (t.maxUses ? '/' + t.maxUses : '') +
+          (t.expiresAt ? ' · ' + new Date(t.expiresAt).toLocaleString() + ' 过期' : ' · 永久');
+        li.appendChild(sp);
+        var mkBtn = function (label, color) {
+          var b = document.createElement('button');
+          b.type = 'button'; b.textContent = label;
+          b.style.cssText = 'margin:0 0 0 6px;padding:2px 8px;width:auto;font-size:11px;background:#fff;border:1px solid #d9cdb5;border-radius:6px;color:' + color + ';cursor:pointer';
+          return b;
+        };
+        var cp = mkBtn('复制链接', '#1e3a5f');
+        cp.addEventListener('click', function () { copyTxt(location.origin + '/customer.html?token=' + t.token, cp); });
+        li.appendChild(cp);
+        var del = mkBtn('吊销', '#a33');
+        del.addEventListener('click', function () {
+          if (!confirm('吊销这个口令？用它的同学将无法再上传。')) return;
+          fetch('/api/tree2/ctoken/' + t.id, { method: 'DELETE', headers: { 'X-Tree2-Token': token() } })
+            .then(function () { loadCtokCard(); });
+        });
+        li.appendChild(del);
+        ul.appendChild(li);
+      });
+      // 批次勾选列表（两届合并）
+      fetch('/api/tree2/seasons').then(function (r) { return r.json(); }).then(function (sd) {
+        var years = (sd.seasons || []).map(function (x) { return x.id; });
+        Promise.all(years.map(function (y) {
+          return fetch('/api/tree2/seasons/' + encodeURIComponent(y)).then(function (r) { return r.json(); }).then(function (m) {
+            return { year: y, names: (m.batches || []).map(function (b) { return b.name; }) };
+          });
+        })).then(function (groups) {
+          var box = document.getElementById('ct-batches');
+          var checked = {};
+          box.querySelectorAll('input:checked').forEach(function (cb) { checked[cb.value] = 1; });
+          box.innerHTML = '';
+          groups.forEach(function (g) {
+            var hd = document.createElement('div');
+            hd.style.cssText = 'font-weight:700;margin:4px 0 2px';
+            hd.textContent = g.year + ' 届';
+            box.appendChild(hd);
+            g.names.forEach(function (bn) {
+              var lab = document.createElement('label');
+              lab.style.cssText = 'display:flex;gap:6px;align-items:center;margin:2px 0;font-size:12px;color:inherit';
+              var cb = document.createElement('input');
+              cb.type = 'checkbox'; cb.value = bn;
+              if (checked[bn]) cb.checked = true;
+              lab.appendChild(cb);
+              lab.appendChild(document.createTextNode(bn));
+              box.appendChild(lab);
+            });
+          });
+        });
+      });
+    }).catch(function () { /* 口令校验失败时卡片本来也是隐藏的 */ });
+  }
+  // 预建空批次：届别下拉 + 创建按钮
+  (function () {
+    var ysel = document.getElementById('nb-year');
+    fetch('/api/tree2/seasons').then(function (r) { return r.json(); }).then(function (d) {
+      (d.seasons || []).forEach(function (x) {
+        var o = document.createElement('option'); o.value = x.id; o.textContent = x.id + ' 届'; ysel.appendChild(o);
+      });
+    });
+    document.getElementById('nb-create').addEventListener('click', function () {
+      var nm = normToken(document.getElementById('nb-name').value);
+      if (!nm) { alert('先填批次名'); return; }
+      fetch('/api/tree2/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token() },
+        body: JSON.stringify({ year: ysel.value, name: nm }),
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); }).then(function (res) {
+        if (!res.ok) { alert('新建失败：' + (res.d.error || '未知')); return; }
+        document.getElementById('nb-name').value = '';
+        // 各处下拉/勾选列表补上这个新批次
+        [document.getElementById('batch'), document.getElementById('del-batch')].forEach(function (sel) {
+          if (sel && ![].some.call(sel.options, function (o) { return o.value === nm; })) {
+            var o = document.createElement('option'); o.value = nm; o.textContent = nm; sel.appendChild(o);
+          }
+        });
+        loadCtokCard();
+      });
+    });
+  })();
+  document.getElementById('copy-daily').addEventListener('click', function () {
+    copyTxt(document.getElementById('daily-token').value, this);
+  });
+  document.getElementById('ct-create').addEventListener('click', function () {
+    var batches = [];
+    document.querySelectorAll('#ct-batches input:checked').forEach(function (cb) { batches.push(cb.value); });
+    if (!batches.length) { alert('先勾选至少一个批次'); return; }
+    fetch('/api/tree2/ctoken', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token() },
+      body: JSON.stringify({ batches: batches, maxUses: document.getElementById('ct-uses').value || null, ttlHours: document.getElementById('ct-ttl').value || null }),
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); }).then(function (res) {
+      var el = document.getElementById('ct-result');
+      if (!res.ok) { el.textContent = '生成失败：' + (res.d.error || '未知'); return; }
+      var link = location.origin + '/customer.html?token=' + res.d.token;
+      el.innerHTML = '口令：<b>' + esc2(res.d.token) + '</b> · <a href="' + link + '" target="_blank">打开 customer.html</a>（链接已复制）';
+      copyTxt(link);
+      loadCtokCard();
+    });
+  });
+  verifyToken(token()); // 打开页面先验一次（记住的口令直接解锁）
+  document.getElementById('token').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    var v = normToken(this.value);
+    clearTimeout(statsTimer);
+    localStorage.setItem(LS_TOKEN, v);
+    verifyToken(v);
+    loadStats();
+  });
+
+  // ＋新建批次：展开/收起新批次名输入框（folder() 按 newbatch 可见性决定取哪个值）
+  var toggleNew = $('toggle-new');
+  if (toggleNew) {
+    toggleNew.addEventListener('click', function () {
+      var inp = $('newbatch');
+      var show = inp.style.display === 'none';
+      inp.style.display = show ? '' : 'none';
+      this.textContent = show ? '－ 用已有批次' : '＋ 新建批次';
+      if (show) inp.focus();
+    });
+  }
+
+  // 热门资料排行（管理数据，要口令）
+  function loadStats() {
+    var t = token();
+    var ol = document.getElementById('stats');
+    if (!ol) return;
+    if (!t) {
+      ol.innerHTML = '<li style="color:#8a7f6e">在上方填好口令后，排行会自动出现</li>';
+      return;
+    }
+    ol.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
+    fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': t } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status === 401 ? '口令不对：检查是否复制完整' : 'HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d.rows || !d.rows.length) {
+          ol.innerHTML = '<li style="color:#8a7f6e">还没有统计数据（浏览/下载后会自动累计）</li>';
+          return;
+        }
+        ol.innerHTML = d.rows.map(function (x) {
+          var nm = String(x.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return '<li><strong>' + nm + '</strong>（' + x.season + ' 届）— 下载 ' + x.downloads + ' · 浏览 ' + x.visits + '</li>';
+        }).join('');
+      })
+      .catch(function (e) {
+        ol.innerHTML = '<li style="color:#8a7f6e">载入失败：' + String(e && e.message || e) + '</li>';
+      });
+  }
+
+  // ---- 上传协议 ----
+  function keyFor(sha, name) {
+    var m = /\.([A-Za-z0-9]+)$/.exec(name);
+    return sha.slice(0, 2) + '/' + sha + (m ? '.' + m[1].toLowerCase() : '');
+  }
+  function year() { return $('year').value; }
+  function folder() {
+    var isNew = $('newbatch').style.display !== 'none';
+    var batch = isNew ? normToken($('newbatch').value).trim() : $('batch').value;
+    if (isNew && !batch) { alert('先填新批次的名字'); throw new Error('no batch'); }
+    var sub = normToken($('sub').value).replace(/^\/+|\/+$/g, '');
+    return sub ? batch + '/' + sub : batch;
+  }
+  function hashFile(file, onPct) {
+    if (window.hashwasm && window.hashwasm.createSHA256) {
+      return window.hashwasm.createSHA256().then(function (h) {
+        h.init();
+        var off = 0;
+        function step() {
+          if (off >= file.size) return h.digest('hex');
+          return file.slice(off, Math.min(file.size, off + PART)).arrayBuffer().then(function (buf) {
+            h.update(new Uint8Array(buf));
+            off += PART;
+            onPct(file.size ? off / file.size * 0.15 : 0);
+            return step();
+          });
+        }
+        return step();
+      });
+    }
+    return file.arrayBuffer().then(function (buf) {
+      return crypto.subtle.digest('SHA-256', buf);
+    }).then(function (buf) {
+      onPct(0.15);
+      return [].map.call(new Uint8Array(buf), function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    });
+  }
+  function putPart(key, i, n, blob) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('PUT', '/api/tree2/files/' + encodeURIComponent(year()) + '/part?k=' + encodeURIComponent(key) + '&i=' + i + '&n=' + n);
+      xhr.setRequestHeader('X-Tree2-Token', token());
+      xhr.setRequestHeader('X-Tree2', '1');
+      xhr.upload.onprogress = function (e) { if (e.lengthComputable) xhr._pct = e.loaded / e.total; };
+      xhr.onload = function () { xhr.status === 200 ? resolve() : reject(new Error('分片 ' + i + ' 失败：HTTP ' + xhr.status)); };
+      xhr.onerror = function () { reject(new Error('网络中断')); };
+      xhr.send(blob);
+    });
+  }
+
+  var statsTimerOK = true;
+  $('go').addEventListener('click', function () {
+    if (!token()) { alert('先填上传口令'); return; }
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = function () { uploadAll([].slice.call(input.files)); };
+    input.click();
+  });
+
+  function row(name, state, label) {
+    var li = document.createElement('li');
+    li.dataset.state = state || 'wait';
+    li.innerHTML = '<div class="n"></div><div class="s"></div><div class="bar"><i></i></div>';
+    li.querySelector('.n').textContent = name;
+    li.querySelector('.s').textContent = label || '';
+    $('list').prepend(li);
+    return li;
+  }
+  function setRow(li, state, label, pct) {
+    li.dataset.state = state;
+    li.querySelector('.s').textContent = label;
+    if (pct != null) li.querySelector('.bar i').style.width = Math.round(pct * 100) + '%';
+  }
+
+  function uploadAll(files) {
+    var btn = $('go');
+    btn.disabled = true;
+    var chain = Promise.resolve();
+    files.forEach(function (f) {
+      chain = chain.then(function () { return uploadOne(f); }).catch(function (e) { /* uploadOne 已上报 */ });
+    });
+    chain.then(function () { btn.disabled = false; });
+  }
+
+  function uploadOne(file) {
+    var li = row(file.name, 'run', '校验中…');
+    return hashFile(file, function (p) { setRow(li, 'run', '校验中…', p); }).then(function (sha) {
+      var key = keyFor(sha, file.name);
+      return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '?h=' + sha).then(function (r) { return r.json(); }).then(function (probe) {
+        if (probe && probe.exists) {
+          setRow(li, 'dup', '秒传：库里已有相同内容（' + key + '）', 1);
+          return;
+        }
+        var n = Math.max(1, Math.ceil(file.size / PART));
+        var i = 0;
+        function next() {
+          if (i >= n) return Promise.resolve();
+          var idx = i++;
+          var start = idx * PART;
+          var blob = file.slice(start, Math.min(file.size, start + PART));
+          return putPart(key, idx, n, blob).then(function () {
+            var sent = Math.min(file.size, (idx + 1) * PART);
+            setRow(li, 'run', '上传分片 ' + (idx + 1) + '/' + n, 0.15 + 0.85 * (sent / file.size));
+            return next();
+          });
+        }
+        return next().then(function () {
+          setRow(li, 'run', '合并校验…', 1);
+          return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '/commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
+            body: JSON.stringify({ key: key, sha256: sha, size: file.size, name: file.name, parts: n, folder: folder() }),
+          }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
+            if (res.ok === 200 && res.d.key) {
+              setRow(li, 'done', '已入库 → ' + folder() + '/' + file.name, 1);
+              loadYear(year());
+              loadStats();
+            }
+            else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
+          });
+        });
+      });
+    }).catch(function (e) {
+      setRow(li, 'error', '失败：' + (e && e.message ? e.message : e), 1);
+    });
+  }
+
+  // ---- 届别与批次 ----
+  function loadYear(yv) {
+    $('batch').innerHTML = '';
+    fetch('/api/tree2/seasons/' + encodeURIComponent(yv)).then(function (r) { return r.json(); }).then(function (m) {
+      (m.batches || []).forEach(function (b) {
+        var o = document.createElement('option');
+        o.value = b.name; o.textContent = b.name;
+        $('batch').appendChild(o);
+      });
+    });
+  }
+  fetch('/api/tree2/seasons').then(function (r) { return r.json(); }).then(function (d) {
+    (d.seasons || []).forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.id; o.textContent = s.id + ' 届';
+      $('year').appendChild(o);
+    });
+    loadYear($('year').value || (d.seasons[0] || {}).id);
+  }).catch(function () {
+    row('(提示)', 'error', '读不到清单：确认服务可用后刷新本页');
+  });
+  $('year').addEventListener('change', function () { loadYear(this.value); });
+
+  // ---- 热门资料排行 ----
+  function loadStats() {
+    var t = token();
+    var ol = document.getElementById('stats');
+    if (!ol) return;
+    if (!t) {
+      ol.innerHTML = '<li style="color:#8a7f6e">在上方填好口令后，排行会自动出现</li>';
+      return;
+    }
+    ol.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
+    fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': t } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status === 401 ? '口令不对：检查是否复制完整' : 'HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d.rows || !d.rows.length) {
+          ol.innerHTML = '<li style="color:#8a7f6e">还没有统计数据（浏览/下载后会自动累计）</li>';
+          return;
+        }
+        ol.innerHTML = d.rows.map(function (x) {
+          var nm = String(x.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return '<li><strong>' + nm + '</strong>（' + x.season + ' 届）— 下载 ' + x.downloads + ' · 浏览 ' + x.visits + '</li>';
+        }).join('');
+      })
+      .catch(function (e) {
+        ol.innerHTML = '<li style="color:#8a7f6e">载入失败：' + String(e && e.message || e) + '</li>';
+      });
+  }
+  loadStats();
+</script>
+<script>
+  (function () {
+    'use strict';
+    var dYear = document.getElementById('del-year');
+    var dBatch = document.getElementById('del-batch');
+    var dFiles = document.getElementById('del-files');
+    var dListBtn = document.getElementById('del-list');
+    var dBatchBtn = document.getElementById('del-batch-btn');
+
+    function t() { return (localStorage.getItem('tree2.token') || '').trim(); }
+    // 与上传区的 normToken 同款：全角字母数字转半角、去首尾空格
+    function normToken(v) {
+      return String(v || '')
+        .replace(/[\uFF01-\uFF5E]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+        .replace(/\u3000/g, ' ')
+        .trim();
+    }
+    function fillYear() {
+      return fetch('/api/tree2/seasons').then(function (r) { return r.json(); }).then(function (d) {
+        dYear.innerHTML = '';
+        (d.seasons || []).forEach(function (s) {
+          var o = document.createElement('option');
+          o.value = s.id; o.textContent = s.id + ' 届';
+          dYear.appendChild(o);
+        });
+        return loadDelBatches(dYear.value);
+      });
+    }
+    function loadDelBatches(yv) {
+      dBatch.innerHTML = '';
+      return fetch('/api/tree2/seasons/' + encodeURIComponent(yv)).then(function (r) { return r.json(); }).then(function (m) {
+        (m.batches || []).forEach(function (b) {
+          var o = document.createElement('option');
+          o.value = b.name; o.textContent = b.name;
+          dBatch.appendChild(o);
+        });
+      });
+    }
+    dYear.addEventListener('change', function () { loadDelBatches(dYear.value); });
+
+    function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function remove(payload) {
+      return fetch('/api/tree2/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': t(), 'X-Tree2': '1' },
+        body: JSON.stringify(payload),
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.status === 200, d: d }; }); });
+    }
+
+    dListBtn.addEventListener('click', loadDelFiles);
+
+    function loadDelFiles() {
+      if (!t()) { alert('先填上方口令'); return; }
+      dFiles.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
+      fetch('/api/tree2/seasons/' + encodeURIComponent(dYear.value)).then(function (r) { return r.json(); }).then(function (m) {
+        var b = (m.batches || []).find(function (x) { return x.name === dBatch.value; });
+        if (!b) { dFiles.innerHTML = '<li style="color:#8a7f6e">清单里找不到这个批次（可能刚改过名或换了届别，点上面按钮重新载入）</li>'; return; }
+        var rows = [];
+        var walk = function (n, p2) {
+          (n.c || []).forEach(function (c) {
+            if (c.t === 'd') walk(c, p2 + '/' + c.n);
+            else {
+              // 相对批次根的路径；批次直属文件不带前缀（此前 replace 不生效，
+              // 每行都带批次名前缀，还衍生出一个假的 📁 批次名目录行导致改名/删除 404）
+              var rel = p2 === b.name ? '' : p2.slice(b.name.length + 1) + '/';
+              rows.push({ name: rel + c.n, k: c.k });
+            }
+          });
+        };
+        walk(b.tree, b.name);
+        if (!rows.length) { dFiles.innerHTML = '<li style="color:#8a7f6e">批次已存在，但还没有文件（预建的空批次；顾客上传或本地放入后重新载入即可看到）</li>'; return; }
+        dFiles.innerHTML = '';
+        var btnCss = 'margin:0 0 0 6px;padding:3px 10px;width:auto;font:600 11px/1.4 inherit;border:1px solid #d9cdb5;border-radius:6px;background:#fff;cursor:pointer;color:#1e3a5f';
+        // 子目录行（去重）：改名直接作用于目录
+        var dirs = [];
+        rows.forEach(function (r0) {
+          var d = r0.name.split('/').slice(0, -1).join('/');
+          if (d && dirs.indexOf(d) < 0) dirs.push(d);
+        });
+        dirs.forEach(function (d) {
+          var li = document.createElement('li');
+          li.innerHTML = '📁 <strong>' + esc(d) + '/</strong>' +
+            '<button type="button" data-a="ren" style="' + btnCss + '">重命名</button>';
+          li.querySelector('[data-a="ren"]').addEventListener('click', function () {
+            var nn = prompt('重命名子目录「' + d + '」为：', d.split('/').pop());
+            if (!nn || nn === d.split('/').pop()) return;
+            rename({ year: dYear.value, path: dBatch.value + '/' + d, newName: normToken(nn) })
+              .then(function (res) {
+                if (res.ok) loadDelFiles(); else alert('重命名失败：' + (res.d.error || '未知'));
+              })
+              .catch(function (e) { alert('重命名失败：' + e.message); });
+          });
+          dFiles.appendChild(li);
+        });
+        rows.forEach(function (r0) {
+          var li = document.createElement('li');
+          li.innerHTML = '<span style="word-break:break-all">' + esc(r0.name) + '</span> ' +
+            '<button type="button" data-a="ren" style="' + btnCss + '">重命名</button>' +
+            '<button type="button" data-a="del" style="' + btnCss + '">删除</button>';
+          var parts = r0.name.split('/');
+          var fname = parts.pop();
+          var fdir = parts.length ? dBatch.value + '/' + parts.join('/') : dBatch.value;
+          li.querySelector('[data-a="ren"]').addEventListener('click', function () {
+            var nn = prompt('重命名文件「' + fname + '」为：', fname);
+            if (!nn || nn === fname) return;
+            rename({ year: dYear.value, path: fdir, name: fname, newName: normToken(nn) })
+              .then(function (res) {
+                if (res.ok) loadDelFiles(); else alert('重命名失败：' + (res.d.error || '未知'));
+              })
+              .catch(function (e) { alert('重命名失败：' + e.message); });
+          });
+          li.querySelector('[data-a="del"]').addEventListener('click', function () {
+            if (!confirm('删除「' + r0.name + '」？下一次发布会把本地文件一并移进下架回收区（D:\\web\\delisted\\），学生随即看不到；服务器上无其他引用的文件本体也会一并删除。注意：三个网盘上的副本不会自动删除，需要手动清理。')) return;
+            remove({ year: dYear.value, path: fdir, name: fname })
+              .then(function (res) {
+                if (res.ok) {
+                  li.remove();
+                  if (res.d && res.d.deletedObjects && res.d.deletedObjects.length) {
+                    console.log('已删除文件本体：', res.d.deletedObjects);
+                  }
+                } else alert('删除失败：' + (res.d.error || '未知'));
+              })
+              .catch(function (e) { alert('删除失败：' + e.message); });
+          });
+          dFiles.appendChild(li);
+        });
+      }).catch(function (e) { dFiles.innerHTML = '<li style="color:#8a7f6e">载入失败：' + esc(e.message) + '</li>'; });
+    }
+
+    function rename(payload) {
+      return fetch('/api/tree2/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': t(), 'X-Tree2': '1' },
+        body: JSON.stringify(payload),
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.status === 200, d: d }; }); });
+    }
+
+    // 重命名批次（云端即时生效；下次发布时 publish 会把同样的改名应用到本地文件夹）
+    document.getElementById('ren-batch-btn').addEventListener('click', function () {
+      if (!t()) { alert('先填上方口令'); return; }
+      if (!dBatch.value) { alert('先选批次'); return; }
+      var oldName = dBatch.value;
+      var nn = prompt('重命名批次「' + oldName + '」为：', oldName);
+      if (!nn || nn === oldName) return;
+      rename({ year: dYear.value, path: oldName, newName: normToken(nn) })
+        .then(function (res) {
+          if (res.ok) {
+            alert('批次已重命名为「' + normToken(nn) + '」。\n下次发布时 publish 会自动把本地同名文件夹一起改掉。');
+            loadDelBatches(dYear.value).then(function () { dBatch.value = normToken(nn); });
+          } else alert('重命名失败：' + (res.d.error || '未知'));
+        })
+        .catch(function (e) { alert('重命名失败：' + e.message); });
+    });
+
+    dBatchBtn.addEventListener('click', function () {
+      if (!t()) { alert('先填上方口令'); return; }
+      if (!dBatch.value) { alert('先选批次'); return; }
+      if (!confirm('删除整个批次「' + dBatch.value + '」？下一次发布会把本地批次目录一并移进下架回收区（D:\\web\\delisted\\），学生随即看不到。注意：三个网盘上的副本不会自动删除，需要手动清理。')) return;
+      remove({ year: dYear.value, path: dBatch.value })
+        .then(function (res) {
+          if (res.ok) { alert('批次已删除（' + res.d.removedFiles + ' 个文件移除）'); loadDelBatches(dYear.value); dFiles.innerHTML = ''; }
+          else alert('删除失败：' + (res.d.error || '未知'));
+        })
+        .catch(function (e) { alert('删除失败：' + e.message); });
+    });
+
+    fillYear();
+  })();
+</script>
+</body>
+</html>

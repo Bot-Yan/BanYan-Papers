@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <!-- 有些内嵌浏览器不认这些 meta，但响应头会补；HTML 被缓存就会出问题 -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>上传资料 · tree2</title>
+  <style>
+    :root { --navy: #1e3a5f; --sub: #8a7f6e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 16px;
+           background: radial-gradient(900px 340px at 50% -10%, #fff6e0, rgba(255,246,224,0) 70%), #fffaf0; min-height: 100vh;
+           font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1e3a5f; }
+    main { max-width: 640px; margin: 0 auto; }
+    .card { background: #fff; border: 1px solid #e8dcc3; border-radius: 14px; padding: 24px; box-shadow: 0 8px 26px rgba(30,58,95,.06); }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; text-decoration: none; color: #1e3a5f; margin: 0 0 6px; font-size: 15px; }
+    .brand img { width: 22px; height: 22px; }
+    h1 { font-size: 19px; margin: 0 0 18px; }
+    label { display: block; font-size: 12.5px; color: #8a7f6e; margin: 14px 0 4px; }
+    input[type="password"], input[type="text"], select {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid #d9cdb5; border-radius: 9px;
+      font: inherit; color: inherit; background: #fffdf6;
+    }
+    button { margin-top: 18px; width: 100%; padding: 12px 20px; border: 0; border-radius: 10px; cursor: pointer;
+             background: #1e3a5f; color: #fff; font: 700 15px/1 inherit; font-family: inherit; }
+    button:hover { background: #16314f; }
+    .hint { color: #8a7f6e; font-size: 12.5px; margin: 10px 0 0; }
+    ul { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 8px; }
+    li { border: 1px solid #ece1ca; border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+    li .n { font-weight: 600; word-break: break-all; }
+    li[data-state="done"] { border-color: #bfe3cf; background: #f4fbf6; }
+    li[data-state="error"] { border-color: #e3a1a1; background: #fff7f5; }
+    li .bar { height: 5px; border-radius: 3px; background: #f0e8d8; margin-top: 6px; overflow: hidden; }
+    li .bar i { display: block; height: 100%; width: 0; background: #f59e0b; transition: width .2s; }
+    li[data-state="done"] .bar i { background: #2f9e63; }
+    .foot { text-align: center; color: #b0a893; font-size: 12px; margin: 16px 0 0; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <a class="brand" href="/"><img src="assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
+    <h1>上传资料给资料库</h1>
+
+    <label for="token">上传口令（管理员发给你，本页保存在此浏览器）</label>
+    <input type="password" id="token" autocomplete="off" placeholder="粘贴口令，回车确认">
+    <p id="gate-hint" style="margin:10px 0 0;color:#8a7f6e;font-size:13px">🔒 输入口令后开始上传</p>
+
+    <div id="gate" hidden>
+      <label for="year">届别</label>
+      <select id="year"></select>
+      <div class="row" style="display:flex;gap:10px">
+        <div style="flex:1;min-width:0">
+          <label for="batch">上传到批次</label>
+          <select id="batch"></select>
+        </div>
+        <div id="newwrap" style="flex:1;min-width:0;display:none">
+          <label for="newbatch">新批次名</label>
+          <input type="text" id="newbatch" placeholder="例如：B5厦门二检（2026.11）…" autocomplete="off">
+        </div>
+      </div>
+      <button type="button" id="pick">选择文件（可多选；.zip 会自动解压上传）</button>
+      <p class="hint" id="who">压缩包里的子文件夹会原样变成批次里的子目录；普通文件直接进批次根目录。</p>
+      <ul id="list"></ul>
+    </div>
+  </div>
+  <p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
+</main>
+
+<script src="vendor/jszip-3.10.2/jszip.min.js"></script>
+<script>
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var PART = 4 * 1024 * 1024;
+  var LS_TOKEN = 'tree2.ctoken';
+  var STATE = { kind: null, batches: [], years: [] }; // batches: [{name, year}]
+
+  function normToken(v) {
+    return String(v || '')
+      .replace(/[\uFF01-\uFF5E]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); })
+      .replace(/\u3000/g, ' ')
+      .trim();
+  }
+  function token() { return normToken($('token').value || localStorage.getItem(LS_TOKEN) || ''); }
+  function log(msg) { console.log('[customer]', msg); }
+
+  // ---- 口令门 ----
+  function applyGate(ok, msg) {
+    $('gate').hidden = !ok;
+    var h = $('gate-hint');
+    h.hidden = !!ok;
+    if (!ok && msg) h.textContent = msg;
+  }
+  function verifyToken(v) {
+    if (!v) { applyGate(false); return; }
+    fetch('/api/tree2/ctoken-check?token=' + encodeURIComponent(v))
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { applyGate(false, res.d.error || '口令无效'); return; }
+        STATE.kind = res.d.kind;
+        applyGate(true);
+        if (res.d.kind === 'once') {
+          STATE.batches = res.d.batchYear && res.d.batchYear.length
+            ? res.d.batchYear
+            : (res.d.batches || []).map(function (n) { return { name: n, year: '2026' }; });
+          $('who').textContent = '一次性口令：只能传到指定批次' +
+            (res.d.remaining != null ? '，剩余可用 ' + res.d.remaining + ' 次' : '');
+          $('newwrap').style.display = 'none';
+          fillYears();
+        } else {
+          // daily：可新建批次，届别任选
+          STATE.batches = [];
+          $('who').textContent = '每日口令：可选择已有批次或新建批次（明天此口令会自动更换，届时找管理员拿新的）';
+          $('newwrap').style.display = '';
+          loadYears().then(function () { fillBatches(); });
+        }
+      })
+      .catch(function () { applyGate(false, '网络异常，稍后重试'); });
+  }
+
+  function loadYears() {
+    return fetch('/api/tree2/seasons').then(function (r) { return r.json(); }).then(function (d) {
+      STATE.years = (d.seasons || []).map(function (s) { return s.id; });
+      var y = $('year'); y.innerHTML = '';
+      STATE.years.forEach(function (id) {
+        var o = document.createElement('option'); o.value = id; o.textContent = id + ' 届'; y.appendChild(o);
+      });
+    });
+  }
+  function fillYears() {
+    var years = [];
+    STATE.batches.forEach(function (b) { if (years.indexOf(b.year) < 0) years.push(b.year); });
+    years.sort();
+    var y = $('year'); y.innerHTML = '';
+    years.forEach(function (id) {
+      var o = document.createElement('option'); o.value = id; o.textContent = id + ' 届'; y.appendChild(o);
+    });
+    fillBatches();
+  }
+  function fillBatches() {
+    var b = $('batch'); b.innerHTML = '';
+    if (STATE.kind === 'once') {
+      STATE.batches.filter(function (x) { return x.year === $('year').value; }).forEach(function (x) {
+        var o = document.createElement('option'); o.value = x.name; o.textContent = x.name; b.appendChild(o);
+      });
+    } else {
+      fetch('/api/tree2/seasons/' + encodeURIComponent($('year').value)).then(function (r) { return r.json(); }).then(function (m) {
+        (m.batches || []).forEach(function (x) {
+          var o = document.createElement('option'); o.value = x.name; o.textContent = x.name; b.appendChild(o);
+        });
+      });
+    }
+  }
+  $('year').addEventListener('change', fillBatches);
+
+  function folder() {
+    if (STATE.kind === 'daily' && $('newwrap').style.display !== 'none') {
+      var nb = normToken($('newbatch').value);
+      if (!nb) { alert('先填新批次的名字'); throw new Error('no batch'); }
+      return nb;
+    }
+    return $('batch').value;
+  }
+
+  $('token').addEventListener('input', function () {
+    var v = normToken(this.value);
+    clearTimeout(verifyToken._t);
+    verifyToken._t = setTimeout(function () {
+      if (v) localStorage.setItem(LS_TOKEN, v); else localStorage.removeItem(LS_TOKEN);
+      verifyToken(v);
+    }, 500);
+  });
+  $('token').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    var v = normToken(this.value);
+    if (v) localStorage.setItem(LS_TOKEN, v);
+    verifyToken(v);
+  });
+
+  // ---- 上传 ----
+  function setRow(li, state, label, pct) {
+    li.dataset.state = state;
+    var n = li.querySelector('.n');
+    // 文件名要一直看得见：原来 label 会整行覆盖掉名字，
+    // 队列一卡就只剩一排「排队中…」，看不出是哪一个文件没动。
+    if (n) n.textContent = label ? li.dataset.name + ' · ' + label : li.dataset.name;
+    var bar = li.querySelector('.bar i');
+    if (bar && pct != null) bar.style.width = Math.round(pct * 100) + '%';
+  }
+  function row(name, state, label) {
+    var li = document.createElement('li');
+    li.dataset.name = name;
+    li.innerHTML = '<div class="n"></div><div class="bar"><i></i></div>';
+    setRow(li, state, label);
+    $('list').appendChild(li);
+    return li;
+  }
+
+  function hashBlob(buf) {
+    return crypto.subtle.digest('SHA-256', buf).then(function (h) {
+      return [].map.call(new Uint8Array(h), function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    });
+  }
+  function keyFor(sha, name) {
+    var m = /\.([A-Za-z0-9]+)$/.exec(name);
+    return sha.slice(0, 2) + '/' + sha + (m ? '.' + m[1].toLowerCase() : '');
+  }
+  function putPart(year, key, i, n, blob) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('PUT', '/api/tree2/files/' + encodeURIComponent(year) + '/part?k=' + encodeURIComponent(key) + '&i=' + i + '&n=' + n);
+      xhr.setRequestHeader('X-Tree2-Token', token());
+      xhr.upload.onprogress = function (e) { if (e.lengthComputable) xhr._pct = e.loaded / e.total; };
+      xhr.onload = function () { xhr.status === 200 ? resolve() : reject(new Error('分片失败：HTTP ' + xhr.status)); };
+      xhr.onerror = function () { reject(new Error('网络中断')); };
+      xhr.send(blob);
+    });
+  }
+
+  function uploadOne(job) {
+    var li = row(job.name, 'run', '排队中…');
+    return new Promise(function (resolve) {
+      var year = job.year || $('year').value;
+      // job.blob 可能是 Blob/File，也可能是 JSZip 还没 resolve 的 Promise——
+      // 两种都要走通，否则 Promise 上没有 arrayBuffer/slice，整条链静默断掉。
+      var chain = Promise.resolve(job.blob).then(function (blob) {
+        return blob.arrayBuffer().then(hashBlob).then(function (sha) {
+        var key = keyFor(sha, job.name);
+        var size = blob.size;
+        var n = Math.max(1, Math.ceil(size / PART));
+        setRow(li, 'run', '校验通过，开始上传（' + n + ' 片）', 0.02);
+        var idx = 0;
+        function next() {
+          if (idx >= n) return Promise.resolve();
+          var start = idx * PART;
+          var piece = blob.slice(start, Math.min(size, start + PART));
+          return putPart(year, key, idx, n, piece).then(function () {
+            idx++;
+            setRow(li, 'run', '上传分片 ' + idx + '/' + n, 0.02 + 0.9 * (idx / n));
+            return next();
+          });
+        }
+        return next().then(function () {
+          setRow(li, 'run', '合并校验…', 1);
+          return fetch('/api/tree2/files/' + encodeURIComponent(year) + '/commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
+            body: JSON.stringify({ key: key, sha256: sha, size: size, name: job.name, parts: n, folder: job.folder }),
+          }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
+            if (res.ok === 200 && res.d.key) { setRow(li, 'done', '已入库 → ' + job.folder + '/' + job.name, 1); }
+            else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
+          });
+        });
+        });
+      }).catch(function (e) {
+        setRow(li, 'error', '失败：' + (e && e.message ? e.message : e), 1);
+      }).then(resolve);
+    });
+  }
+
+  function uploadAll(files) {
+    var chain = Promise.resolve();
+    files.forEach(function (job) {
+      chain = chain.then(function () { return uploadOne(job); });
+    });
+    return chain;
+  }
+
+  // zip → 展开成普通任务（子目录进 folder）；跳过 mac 垃圾与目录项
+  function expandZip(file, baseFolder) {
+    if (!/\.zip$/i.test(file.name) || !window.JSZip) {
+      // 必须包成和 zip 分支同构的任务：uploadOne 读的是 job.blob，
+      // 原来直接把 File 塞进 jobs，job.blob 是 undefined，一上手就抛 TypeError。
+      return Promise.resolve([{ name: file.name, folder: baseFolder, year: file._year, blob: file }]);
+    }
+    return window.JSZip.loadAsync(file).then(function (zip) {
+      var jobs = [];
+      var names = Object.keys(zip.files).filter(function (n) {
+        return !zip.files[n].dir && !/(^|\/)(__MACOSX|\.DS_Store)/i.test(n);
+      });
+      if (!names.length) throw new Error('压缩包里没有文件');
+      names.forEach(function (n) {
+        var clean = n.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (clean.split('/').some(function (s) { return s === '..'; })) return; // 防路径穿越
+        var dir = clean.split('/').slice(0, -1).join('/');
+        var fname = clean.split('/').pop();
+        if (!fname) return;
+        jobs.push({
+          name: fname,
+          folder: baseFolder + (dir ? '/' + dir : ''),
+          year: file._year,
+          blob: zip.file(n).async('blob'),
+        });
+      });
+      return jobs;
+    });
+  }
+
+  $('pick').addEventListener('click', function () {
+    if (!token()) { alert('先填口令'); return; }
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = function () {
+      var list = [].slice.call(input.files);
+      var base = folder();
+      var year = $('year').value;
+      var jobs = [];
+      var chain = Promise.resolve();
+      list.forEach(function (f) {
+        f._year = year;
+        chain = chain.then(function () { return expandZip(f, base); }).then(function (expanded) {
+          jobs.push.apply(jobs, expanded);
+        }).catch(function (e) {
+          row(f.name, 'error', '压缩包解压失败：' + (e && e.message ? e.message : e));
+        });
+      });
+      chain.then(function () {
+        if (!jobs.length) return;
+        var c2 = Promise.resolve();
+        jobs.forEach(function (job) { c2 = c2.then(function () { return uploadOne(job); }); });
+        c2.then(function () { log('全部完成'); });
+      });
+    };
+    input.click();
+  });
+
+  var qt = new URLSearchParams(location.search).get('token'); // 管理员复制的链接自带口令
+  if (qt) { $('token').value = normToken(qt); localStorage.setItem(LS_TOKEN, normToken(qt)); }
+  verifyToken(token()); // 打开页面先验一次（记住的口令直接解锁）
+</script>
+</body>
+</html>

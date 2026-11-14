@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tree2 · 自检</title>
+  <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
+  <style>
+    :root { --ink: #1e3a5f; --sub: #8a7f6e; --line: #e8dcc3; --ok: #22a06b; --bad: #e8503a; --paper: #fffaf0; }
+    body { margin: 0; font: 14px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--ink);
+      background: radial-gradient(1200px 420px at 50% -10%, #fff6e0, rgba(255,246,224,0) 70%), var(--paper); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
+    h1 { font-size: 26px; margin: 0 0 6px; }
+    .deck { color: var(--sub); margin: 0 0 18px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .card h2 { font-size: 14px; margin: 0 0 8px; }
+    .card .state { font-size: 12px; color: var(--sub); min-height: 18px; }
+    .card .state.ok { color: var(--ok); }
+    .card .state.bad { color: var(--bad); }
+    .card .box { margin-top: 8px; background: #f7f4ee; border-radius: 8px; min-height: 80px; overflow: hidden; }
+    .card img { max-width: 100%; display: block; border-radius: 6px; }
+    .card .box iframe { width: 100%; height: 240px; border: 0; display: block; }
+    .card .box audio { width: 100%; }
+    .card .box pre { margin: 0; padding: 8px; font-size: 10px; max-height: 120px; overflow: hidden; }
+    .summary { margin-top: 20px; padding: 12px 14px; border-radius: 10px; background: #fff; border: 1px solid var(--line); font-weight: 700; }
+    ul.files { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; color: var(--sub); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>tree2 · 渲染自检</h1>
+    <p class="deck">用 <code>?year=2026&amp;api=…</code> 指定届别与文件服务；页面会把这一届「已入库」的文件按类型渲染一遍，并计时。</p>
+    <div class="grid" id="grid"></div>
+    <div class="summary" id="summary">等待文件服务…</div>
+    <ul class="files" id="files"></ul>
+  </div>
+  <script type="module">
+    import { fileUrl, loadSeason, storageState } from './js/api.js';
+    import { kindOf } from './js/preview.js';
+
+    const q = new URLSearchParams(location.search);
+    const year = q.get('year') || '2026';
+    const summary = document.getElementById('summary');
+    document.title = `tree2 · 渲染自检 · ${year}`;
+
+    /** 每次只渲染每类第 N 个，N 用 ?each= 控制，默认 1。 */
+    const each = Math.max(1, Number(q.get('each') || 1));
+
+    const card = (title) => {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML = `<h2>${title}</h2><div class="state">排队中…</div><div class="box"></div>`;
+      document.getElementById('grid').appendChild(el);
+      return { el, state: el.querySelector('.state'), box: el.querySelector('.box') };
+    };
+
+    const settle = (c, ok, text) => {
+      c.state.textContent = text;
+      c.state.className = `state ${ok ? 'ok' : 'bad'}`;
+    };
+
+    function filesOf(manifest, online) {
+      const out = [];
+      const walk = (n, p) => {
+        for (const ch of n.c || []) {
+          if (ch.t === 'd') walk(ch, p ? `${p}/${ch.n}` : ch.n);
+          else if (ch.k && online.has(ch.k)) out.push({ ...ch, path: p });
+        }
+      };
+      for (const b of manifest.batches) walk(b.tree, '');
+      const byKind = {};
+      for (const f of out) {
+        const k = kindOf(f.n);
+        byKind[k] = byKind[k] || [];
+        byKind[k].push(f);
+      }
+      return byKind;
+    }
+
+    async function withTimeout(p, ms) {
+      let t;
+      return Promise.race([p, new Promise((_, rej) => (t = setTimeout(() => rej(new Error(`${ms / 1000}s 超时`)), ms)))]).finally(() => clearTimeout(t));
+    }
+
+    /** 直接拿渲染库里暴露的 API 渲染（不经过预览抽屉，测的是渲染器本身）。 */
+    async function loadScript(src) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = res;
+        s.onerror = () => rej(new Error(`加载失败 ${src}`));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function testPdf(f, c) {
+      await loadScript('vendor/pdfjs-3.11.174/pdf.min.js');
+      const lib = window.pdfjsLib;
+      lib.GlobalWorkerOptions.workerSrc = new URL('vendor/pdfjs-3.11.174/pdf.worker.min.js', location.href).href;
+      // pdf.js 的 worker 会和页面 DOM 抢线程：先渲染进离屏 canvas，好了再挂进页面
+      const url = fileUrl(year, f);
+      const t0 = performance.now();
+      const task = lib.getDocument({ url, cMapUrl: new URL('vendor/pdfjs-3.11.174/cmaps/', location.href).href, cMapPacked: true });
+      const doc = await task.promise;
+      const page = await doc.getPage(1);
+      const vp = page.getViewport({ scale: 1.4 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      const ms = Math.round(performance.now() - t0);
+      // 统计非白像素，确认不是空页
+      const data = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
+      let ink = 0;
+      for (let i = 0; i < data.length; i += 4 * 13) if (data[i] < 200) ink++;
+      c.box.appendChild(canvas);
+      return { ok: ink > 50, text: `${doc.numPages} 页 · ${ms}ms · 墨迹 ${ink}` };
+    }
+
+    async function testDocx(f, c) {
+      await loadScript('vendor/jszip-3.10.2/jszip.min.js');
+      await loadScript('vendor/docx-preview-0.4.1/docx-preview.min.js');
+      const blob = await fetch(fileUrl(year, f)).then((r) => r.blob());
+      const t0 = performance.now();
+      const host = document.createElement('div');
+      host.style.cssText = 'background:#fff;transform-origin:0 0';
+      await window.docx.renderAsync(blob, host, null, { inWrapper: true, ignoreWidth: true, ignoreHeight: true, breakPages: false });
+      const ms = Math.round(performance.now() - t0);
+      const filled = (host.querySelector('.docx-wrapper') ? host.querySelector('.docx-wrapper').textContent : host.textContent) || '';
+      const text = filled.trim();
+      c.box.style.maxHeight = '420px';
+      c.box.style.overflow = 'auto';
+      c.box.appendChild(host);
+      return { ok: text.length > 10 || host.querySelector('img'), text: `${ms}ms · ${text.length} 字 · ${host.querySelectorAll('table').length} 表` };
+    }
+
+    async function testSheet(f, c) {
+      await loadScript('vendor/xlsx-0.20.3/xlsx.full.min.js');
+      const buf = await fetch(fileUrl(year, f)).then((r) => r.arrayBuffer());
+      const wb = window.XLSX.read(buf, { type: 'array' });
+      const t = document.createElement('template');
+      t.innerHTML = window.XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]]);
+      c.box.style.overflow = 'auto';
+      c.box.appendChild(t.content);
+      return { ok: true, text: `${wb.SheetNames.length} 个工作表` };
+    }
+
+    async function testImage(f, c) {
+      const img = new Image();
+      img.src = fileUrl(year, f);
+      await withTimeout(img.decode(), 20000);
+      c.box.appendChild(img);
+      return { ok: img.naturalWidth > 0, text: `${img.naturalWidth}×${img.naturalHeight}` };
+    }
+
+    async function testAudio(f, c) {
+      const a = document.createElement('audio');
+      a.controls = true;
+      a.src = fileUrl(year, f);
+      c.box.appendChild(a);
+      await withTimeout(new Promise((res, rej) => {
+        a.onloadedmetadata = res;
+        a.onerror = () => rej(new Error('音频加载失败'));
+      }), 20000);
+      return { ok: a.duration > 0, text: `${Math.round(a.duration)}s` };
+    }
+
+    async function testText(f, c) {
+      const t = await fetch(fileUrl(year, f)).then((r) => r.text());
+      const pre = document.createElement('pre');
+      pre.textContent = t.slice(0, 300);
+      c.box.appendChild(pre);
+      return { ok: t.length > 0, text: `${t.length} 字` };
+    }
+
+    const RUNNERS = { pdf: testPdf, docx: testDocx, sheet: testSheet, image: testImage, audio: testAudio, text: testText };
+    const LABEL = { pdf: 'PDF · pdf.js', docx: 'Word · docx-preview', sheet: 'Excel · SheetJS', image: '图片 · 原生', audio: '音频 · 原生', text: '文本 · 原生' };
+
+    async function main() {
+      try {
+        const [manifest, st] = await Promise.all([loadSeason(year), storageState(year)]);
+        const byKind = filesOf(manifest, st.keys);
+        const total = Object.values(byKind).reduce((n, a) => n + a.length, 0);
+        if (!total) {
+          summary.textContent = `这一届还没有已入库的文件（storage=${st.source}）。先跑 scripts/tree2-fixtures.mjs 或让老师拖文件上传。`;
+          return;
+        }
+        let pass = 0;
+        let all = 0;
+        for (const [kind, files] of Object.entries(byKind)) {
+          if (!RUNNERS[kind]) continue;
+          for (const f of files.slice(0, each)) {
+            all++;
+            const c = card(`${LABEL[kind]} <span style="font-weight:400;color:#8a7f6e;font-size:11px">${f.n.slice(0, 24)}</span>`);
+            c.state.textContent = '渲染中…';
+            try {
+              const r = await withTimeout(RUNNERS[kind](f, c), 60000);
+              settle(c, r.ok, r.text);
+              if (r.ok) pass++;
+            } catch (e) {
+              settle(c, false, e.message);
+            }
+          }
+        }
+        summary.textContent = `${pass}/${all} 通过 · 届 ${year} · 已入库 ${st.keys.size} 个文件 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+        document.getElementById('files').innerHTML = Object.entries(byKind).map(([k, a]) => `<li>${k}：${a.map((f) => f.n).join('、')}</li>`).join('');
+      } catch (e) {
+        summary.textContent = `打不开清单：${e.message}`;
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

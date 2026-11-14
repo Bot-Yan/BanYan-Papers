@@ -1,0 +1,14 @@
+# 服务器上运行产生、不由本仓库管理的数据，部署（rsync --delete）时不许碰。
+# 对应 landing-page 的 .deployignore 保护逻辑：deploy 只管代码和静态站点。
+data/
+storage/
+preview-cache/
+backups/
+# 清单与届别索引是运行时被服务端/发布脚本改写的（上传 commit、remove、重扫都会写），
+# 仓库里没有它们；部署绝不能用仓库快照覆盖服务器上的最新清单
+public/tree2/data/
+/public/tree2/2026.json
+/public/tree2/2027.json
+# 历史手工备份与临时文件，留在服务器上由人手动清理
+*.bak-*
+js_tmp_check/

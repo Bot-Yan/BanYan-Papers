@@ -1,0 +1,14 @@
+# 服务器运行数据，永远不进仓库
+data/
+storage/
+preview-cache/
+backups/
+# 清单/届别索引：运行时被服务端改写（上传、删除、重扫），不跟踪
+public/tree2/data/
+/public/tree2/2026.json
+/public/tree2/2027.json
+*.bak-*
+js_tmp_check/
+node_modules/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,23 @@
+{
+  "name": "福建高考备考资料导航",
+  "short_name": "备考资料",
+  "description": "按考试批次归档的省内全科原卷、答案、听力与解析",
+  "start_url": "/?from=pwa",
+  "display": "standalone",
+  "background_color": "#fffaf0",
+  "theme_color": "#1e3a5f",
+  "icons": [
+    {
+      "src": "/assets/facivon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/paw.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

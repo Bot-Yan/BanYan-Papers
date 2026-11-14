@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <!-- 有些内嵌浏览器只认 meta，不认响应头；HTML 被缓存就会出现"要刷新一次才是新界面" -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="福建高考备考资料导航 tree2：按考试批次浏览原卷、答案、听力与解析，支持 PDF / Word / 图片在线预览。">
+  <title>福建高考备考资料导航 · tree2</title>
+  <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#1e3a5f">
+  <link rel="apple-touch-icon" href="assets/facivon.svg">
+  <link rel="stylesheet" href="css/tree2.css?v=20261108d">
+  <!-- 首屏用到的渲染库不预加载：pdf.js（1.5 MB）等点开文件时按需拉 -->
+  <link rel="preconnect" href="/">
+</head>
+<body>
+  <a class="t2-skip" href="#main" style="position:absolute;left:-9999px">跳到内容</a>
+
+  <header class="t2-top">
+    <button class="t2-iconbtn t2-menu" id="menu" type="button" aria-label="目录">☰</button>
+    <a class="t2-brand" href="index.html">
+      <img src="assets/paw.svg" width="24" height="24" alt="">
+      备考资料导航 <small>TREE2</small>
+    </a>
+    <nav class="t2-seasons" id="seasons" aria-label="选择届别"></nav>
+    <form class="t2-search" id="search-form" role="search">
+      <span class="t2-search-ico" aria-hidden="true">⌕</span>
+      <input id="q" type="search" placeholder="搜文件名：英语 听力 / 厦门二检 / 省质检" autocomplete="off" enterkeyhint="search" aria-label="搜索文件">
+      <kbd>/</kbd>
+    </form>
+  </header>
+
+  <div class="t2-shell" id="shell">
+    <aside class="t2-side" aria-label="目录">
+      <div class="t2-filters">
+        <div class="t2-chips" id="kind-chips" aria-label="按类型筛选"></div>
+        <button class="t2-btn" type="button" id="fav-entry" style="margin-top:10px;width:100%" title="收藏保存在本浏览器">★ 我的收藏</button>
+      </div>
+      <div class="t2-tree" id="tree" role="tree" aria-label="批次与目录"></div>
+    </aside>
+
+    <main class="t2-main" id="main">
+      <!-- 移动端搜索框由 app.js 挪到这里（#page 之上），#page 才是被反复重渲染的内容区 -->
+      <div id="page">
+        <section class="t2-hero">
+          <div class="t2-kicker">加载中</div>
+          <h1 class="t2-title">正在读取资料清单…</h1>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- 预览抽屉 -->
+  <section class="t2-viewer" id="viewer" data-open="false" role="dialog" aria-modal="true" aria-label="文件预览">
+    <div class="t2-viewer-head">
+      <div class="t2-viewer-title" id="v-title"></div>
+      <span id="v-sub" style="font-size:12px;color:#9aa3ad"></span>
+      <button class="t2-btn" type="button" id="v-share" title="生成 /s/ 短链发给别人">分享</button>
+      <button class="t2-btn" type="button" id="v-down">下载</button>
+      <button class="t2-btn" type="button" id="v-close">关闭 Esc</button>
+    </div>
+    <div class="t2-viewer-body" id="v-body"></div>
+    <!-- 手机端浮动关闭键：顶部栏万一被状态栏/刘海压住，这个永远够得到 -->
+    <button class="t2-viewer-fab" id="v-close-fab" type="button" aria-label="关闭预览">✕</button>
+  </section>
+
+  <div class="t2-toast" id="t2-toast" role="status"></div>
+
+  <script type="module" src="js/app.js?v=20261112b"></script>
+  <script>
+    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+      addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+    }
+  </script>
+  <script>
+    // 兜底：模块加载失败 / 脚本抛错时，别让页面停在"正在读取资料清单"或者一片空白。
+    // 这类问题在控制台里能看到，但很多同学不会去开控制台。
+    (function () {
+      function fail(msg) {
+        var m = document.getElementById('page');
+        if (!m || m.dataset.failed) return;
+        m.dataset.failed = '1';
+        m.innerHTML =
+          '<section class="t2-hero"><div class="t2-kicker">出错了</div>' +
+          '<h2 class="t2-title">页面没能启动</h2>' +
+          '<p class="t2-deck">' + String(msg).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }) + '</p>' +
+          '<p class="t2-deck">把这个页面地址加 <code>?diag=1</code> 再打开，可以看到详细自检。</p></section>';
+      }
+      window.addEventListener('error', function (e) {
+        if (e && e.message) fail(e.message + (e.filename ? '（' + e.filename + ':' + e.lineno + '）' : ''));
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        var r = e && e.reason;
+        fail((r && r.message) || String(r || '未知错误'));
+      });
+      // 5 秒后如果还停在"加载中"，说明模块根本没跑起来（比如 MIME 类型不对、脚本 404）
+      setTimeout(function () {
+        var m = document.getElementById('page');
+        if (m && m.textContent.indexOf('正在读取资料清单') >= 0) {
+          fail('脚本没有启动。检查 js/app.js 是否能正常加载（状态码、Content-Type 是否为 text/javascript）。');
+        }
+      }, 5000);
+    })();
+  </script>
+  <noscript>需要开启 JavaScript 才能浏览目录与在线预览。</noscript>
+</body>
+</html>
