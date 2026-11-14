@@ -315,7 +315,9 @@ function audioPlayer(box, url, name) {
  * 渲染新 PDF 前自动清上一个；关闭预览抽屉时由 app.js 调 disposePdf() 主动清。
  */
 let pdfCleanup = null;
+let pdfSeq = 0;
 export function disposePdf() {
+  pdfSeq += 1; // 让还在渲染中的旧 pdf() 不再注册清理回调，防止它晚完成时覆盖掉新一份的清理
   if (pdfCleanup) {
     pdfCleanup();
     pdfCleanup = null;
@@ -324,6 +326,7 @@ export function disposePdf() {
 
 async function pdf(box, blob, note) {
   disposePdf(); // 换着看 PDF/其它文件时，上一个文档的内存和监听器都还在
+  const seq = pdfSeq;
   await script(`${V}/pdfjs-3.11.174/pdf.min.js`);
   const lib = window.pdfjsLib;
   if (!lib) throw new Error('pdf.js 没有正确加载');
@@ -451,13 +454,15 @@ async function pdf(box, blob, note) {
     ro.observe(view);
   }
 
-  pdfCleanup = () => {
+  const cleanup = () => {
     window.removeEventListener('resize', onResize);
     window.removeEventListener('orientationchange', onResize);
     if (io) io.disconnect();
     if (ro) ro.disconnect();
     try { doc.destroy(); } catch { /* 已销毁/渲染中 */ }
   };
+  // 渲染期间如果又开了别的 PDF / 关了抽屉（pdfSeq 已变），这次渲染的产物已被丢弃，别抢注清理回调
+  if (seq === pdfSeq) pdfCleanup = cleanup;
 
   if (!pages.length) note('这个 PDF 没有页面。');
 }

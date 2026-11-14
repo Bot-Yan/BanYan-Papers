@@ -432,21 +432,20 @@
           headers: { 'Content-Type': 'application/json', 'X-Tree2-Token': token(), 'X-Tree2': '1' },
           body: JSON.stringify(payload),
         }).then(function (r) { return r.json().then(function (d) { return { ok: r.status, d: d }; }); }).then(function (res) {
-          if (res.ok === 200 && res.d.key) {
+          if (res.ok === 200 && res.d.key && res.d.attached === false) {
+            // 字节入库了但没挂上清单（目录为空或清单缺失）：如实提示，别报成功
+            setRow(li, 'error', '内容已入库，但没有挂到清单（目录为空或该届清单缺失）。填好目录重传一次即可挂上（会走秒传）。', 1);
+          }
+          else if (res.ok === 200 && res.d.key) {
             setRow(li, 'done', '已入库 → ' + folder() + '/' + file.name, 1);
             loadYear(year());
             loadStats();
           }
           else setRow(li, 'error', '失败：' + (res.d.error || ('HTTP ' + res.ok)), 1);
+          return res;
         });
       }
-      return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '?h=' + sha).then(function (r) { return r.json(); }).then(function (probe) {
-        if (probe && probe.exists) {
-          // 秒传：内容已在库（parts:0 走服务端短路）。此前只提示不挂清单，
-          // 同内容换个名字/目录再传会永远进不了清单
-          setRow(li, 'run', '秒传：库里已有相同内容，直接挂到清单', 1);
-          return commit({ key: key, sha256: sha, size: file.size, name: file.name, parts: 0, folder: folder() });
-        }
+      function chunked(uploadKey) {
         var n = Math.max(1, Math.ceil(file.size / PART));
         var i = 0;
         function next() {
@@ -454,7 +453,7 @@
           var idx = i++;
           var start = idx * PART;
           var blob = file.slice(start, Math.min(file.size, start + PART));
-          return putPart(key, idx, n, blob).then(function () {
+          return putPart(uploadKey, idx, n, blob).then(function () {
             var sent = Math.min(file.size, (idx + 1) * PART);
             setRow(li, 'run', '上传分片 ' + (idx + 1) + '/' + n, 0.15 + 0.85 * (sent / file.size));
             return next();
@@ -462,8 +461,21 @@
         }
         return next().then(function () {
           setRow(li, 'run', '合并校验…', 1);
-          return commit({ key: key, sha256: sha, size: file.size, name: file.name, parts: n, folder: folder() });
+          return commit({ key: uploadKey, sha256: sha, size: file.size, name: file.name, parts: n, folder: folder() });
         });
+      }
+      return fetch('/api/tree2/files/' + encodeURIComponent(year()) + '?h=' + sha).then(function (r) { return r.json(); }).then(function (probe) {
+        // 秒传：内容已在库（parts:0 走服务端短路）。只认扩展名一致的命中——
+        // 对象键带扩展名，同内容换扩展名时对象不在客户端算出的键上，直接 commit 会 409
+        var hitExt = probe && probe.key ? ((/\.([a-z0-9]{1,8})$/i.exec(probe.key) || [''])[0]) : '';
+        var ext = (/\.([a-z0-9]{1,8})$/i.exec(file.name) || [''])[0].toLowerCase();
+        if (probe && probe.exists && probe.key && hitExt.toLowerCase() === ext) {
+          setRow(li, 'run', '秒传：库里已有相同内容，直接挂到清单', 1);
+          return commit({ key: probe.key, sha256: sha, size: file.size, name: file.name, parts: 0, folder: folder() }).then(function (res) {
+            if (res && res.ok === 409) return chunked(key); // 探测命中的对象刚好被清理：降级分片上传
+          });
+        }
+        return chunked(key);
       });
     }).catch(function (e) {
       setRow(li, 'error', '失败：' + (e && e.message ? e.message : e), 1);

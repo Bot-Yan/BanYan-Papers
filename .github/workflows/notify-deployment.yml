@@ -101,7 +101,8 @@ jobs:
           }
           const fallback = {timed_out:'GitHub Actions 运行超时。',startup_failure:'GitHub Actions 未能启动工作流。',
             action_required:'GitHub Actions 需要人工处理。',cancelled:'运行被取消，部署可能未完成。',failure:'工作流失败，GitHub 未提供具体失败步骤。'};
-          const start = Date.parse(run.run_started_at || run.created_at);
+          const startParsed = Date.parse(run.run_started_at || run.created_at);
+          const start = Number.isFinite(startParsed) ? startParsed : Date.now();
           const finish = Math.max(start, ...jobs.map(job => Date.parse(job.completed_at)).filter(Number.isFinite));
           const commit = run.head_commit;
           const short = (value, length) => typeof value === 'string' ? value.slice(0, length).toWellFormed() : '';

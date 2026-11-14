@@ -241,7 +241,11 @@ async function proxyAudioStream(req, res, upstreamUrl) {
   if (contentLength) h['Content-Length'] = contentLength;
   res.writeHead(upstream.status, { ...cors(req), ...h });
   if (req.method === 'HEAD' || !upstream.body) return res.end();
-  await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {});
+  await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {
+    // 管道失败（多半是客户端断开/拖动进度重发 Range）：撤掉上游响应体，
+    // 不然 undici 会把整首歌继续拉完，白白占着连接和流量
+    upstream.body?.cancel().catch(() => {});
+  });
 }
 
 // ------------------------------------------------------------- 旧版分享注册表（只读兼容）
@@ -369,6 +373,20 @@ async function objectKeys() {
   return keys;
 }
 
+// 秒传探测是公开接口，每次全量 readdir 对象库太重：加个短 TTL 缓存。
+// 提交入库 / 引用清理会主动失效，缓存期间对象只会「多算存在」不会漏报；
+// 万一漏报，客户端也会降级成分片上传，不影响正确性。
+let objKeysCache = { keys: null, at: 0 };
+async function objectKeysCached() {
+  if (objKeysCache.keys && Date.now() - objKeysCache.at < 10000) return objKeysCache.keys;
+  const keys = await objectKeys();
+  objKeysCache = { keys, at: Date.now() };
+  return keys;
+}
+function invalidateObjectKeys() {
+  objKeysCache = { keys: null, at: 0 };
+}
+
 async function readManifestFile(year) {
   return JSON.parse(await fsp.readFile(path.join(cfg.data, `${safeYear(year)}.json`), 'utf8'));
 }
@@ -449,7 +467,7 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
   // ① 秒传探测：内容哈希 → 文件是否已在库
   if (/^[0-9a-f]{64}$/.test(sha)) {
     const known = await manifestKeys(year);
-    const objects = await objectKeys();
+    const objects = await objectKeysCached();
     const hit = [...known].find((k) => k.includes(`/${sha}`)) || [...objects].find((k) => k.includes(`/${sha}`));
     return json(res, 200, { exists: Boolean(hit) && objects.has(hit), key: hit || null });
   }
@@ -1246,7 +1264,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     for (const k of removedKeys) {
       const sha = path.basename(k, path.extname(k));
       if (!sha || refs.includes(sha)) continue;
-      try { await fsp.unlink(objPath(k)); deletedObjects.push(k); } catch { /* 本体可能本来就不在 */ }
+      try { await fsp.unlink(objPath(k)); invalidateObjectKeys(); } catch { /* 本体可能本来就不在 */ }
     }
   }
   // 删除事件也要写进 uplog，和改名对称：清单是从本地目录全量重扫派生的，
@@ -1491,8 +1509,8 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   const parts = Number(body.parts);
   const expect = String(body.sha256 || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(expect)) throw new HttpError(400, 'sha256 不合法');
-  // parts 必须显式给出（秒传为 0）：省略时若静默按秒传处理，调用方漏传会被当成「内容已入库」
-  if (body.parts === undefined) throw new HttpError(400, '缺少 parts（分片数，秒传传 0）');
+  // parts 必须显式给出（秒传为 0）：null 和 undefined 都挡掉，否则 Number(null)===0 会被当成秒传
+  if (body.parts == null) throw new HttpError(400, '缺少 parts（分片数，秒传传 0）');
   if (!Number.isInteger(parts) || parts < 0 || parts > 4096) throw new HttpError(400, '分片数不合法');
   if (auth.kind === 'once') {
     const firstSeg = String(body.folder || '').split('/').filter(Boolean)[0] || '';
@@ -1504,6 +1522,18 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   // 存储键 = sha256 + 扩展名：键与声明的哈希必须一致，否则挂进清单的名实不符
   if (path.basename(key, path.extname(key)) !== expect) {
     throw new HttpError(400, '存储键与 sha256 不一致（key 应为 <前2位>/<sha256>.<ext>）');
+  }
+
+  // once 口令的秒传加一道归属校验：内容必须已在口令可用的批次里挂过清单。
+  // 否则拿着公开清单里的存储键（sha 是公开的）就能把库里任何文件「引用」进自己的
+  // 批次并任意改名——秒传只该省流量，不该变成跨批次引用任意内容的通道。
+  // daily 口令本身就能把任意字节传进任意批次，秒传不扩大其权限，不加限制。
+  if (parts === 0 && auth.kind === 'once') {
+    const m = await readManifestFile(year).catch(() => null);
+    const owned = new Set();
+    const walk = (node) => { for (const c of node.c || []) { if (c.t === 'd') walk(c); else if (c.k) owned.add(c.k); } };
+    for (const b of (m && m.batches) || []) if (auth.rec.batches.includes(b.name)) walk(b.tree);
+    if (!owned.has(key)) throw new HttpError(409, '秒传受限：该内容不在你可用批次的清单里，请按分片上传');
   }
 
   const final = objPath(key);
@@ -1548,6 +1578,7 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
     }
     await fsp.rename(tmpOut, final);
     await fsp.rm(dir, { recursive: true, force: true });
+    invalidateObjectKeys(); // 新对象入盘，秒传探测缓存别再报「不存在」
   }
 
   // 把文件挂到清单里：folder 是批次目录（如 "A1福州一检（2025.8）…"），name 是文件名
