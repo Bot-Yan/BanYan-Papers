@@ -5,8 +5,7 @@ preview-cache/
 backups/
 # 清单/届别索引：运行时被服务端改写（上传、删除、重扫），不跟踪
 public/tree2/data/
-/public/tree2/2026.json
-/public/tree2/2027.json
+/public/tree2/2[0-9][0-9][0-9]*.json
 *.bak-*
 js_tmp_check/
 node_modules/
