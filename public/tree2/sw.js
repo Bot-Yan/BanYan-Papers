@@ -1,6 +1,6 @@
 // tree2 Service Worker：可安装 + 离线浏览目录（文件字节仍需联网）
 // 清单/页面网络优先（发布后学生立刻看到新版），静态资源缓存优先（秒开）
-const CACHE = 'tree2-pwa-v6';
+const CACHE = 'tree2-pwa-v7';
 // js/css 不进 SHELL：页面引用它们时都带 ?v= 版本参数（js/app.js?v=…），预缓存的
 // 无版本路径是不同的缓存键，永远命中不了，等于白白多下载一份。版本化资源的
 // 更新靠改 ?v=（缓存优先策略下新请求键不同，自然拿到新文件）。
@@ -22,15 +22,28 @@ self.addEventListener('fetch', (e) => {
   // 管理 API（含 /stats 统计——缓存它会让 admin.html 显示昨天的数据）、
   // 管理页 admin.html（历史名 up.html 也拦）、sw 自身：一律网络直连。
   // 部署后这些页面绝不能"卡回去"。
-  if (url.pathname.startsWith('/api/') || url.pathname === '/admin.html' || url.pathname === '/customer.html' || url.pathname === '/up.html' || url.pathname === '/sw.js') return;
+  const publicCatalogue = !url.search && /^\/api\/tree2\/(?:seasons(?:\/\d{4})?|storage\/\d{4})$/.test(url.pathname);
+  if (req.headers.has('Authorization') || req.headers.has('X-Tree2-Token') ||
+      (url.pathname.startsWith('/api/') && !publicCatalogue) ||
+      ['/admin.html', '/customer.html', '/up.html', '/sw.js'].includes(url.pathname)) return;
 
-  const isData = url.pathname === '/' || url.pathname === '/index.html' || url.pathname.endsWith('.json') || url.pathname.startsWith('/api/tree2/seasons') || url.pathname.startsWith('/api/tree2/storage');
+  const isData = publicCatalogue || url.pathname === '/' || url.pathname === '/index.html' || url.pathname.endsWith('.json');
   if (isData) {
     // 网络优先：发布后学生立刻看到新版；断网回缓存（离线可浏览目录）
     e.respondWith(
       fetch(req)
-        .then((r) => { const cp = r.clone(); caches.open(CACHE).then((c) => c.put(req, cp)); return r; })
-        .catch(() => caches.match(req)),
+        .then((r) => {
+          const restricted = /\b(?:no-store|private)\b/i.test(r.headers.get('Cache-Control') || '');
+          if (publicCatalogue && (restricted || (!r.ok && r.status < 500))) {
+            e.waitUntil(caches.open(CACHE).then(c => c.delete(req)).catch(() => {}));
+          }
+          if (r.ok && !restricted) {
+            const copy = r.clone();
+            e.waitUntil(caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {}));
+          }
+          return r;
+        })
+        .catch(async () => await caches.match(req) || Response.error()),
     );
   } else {
     // 静态资源缓存优先

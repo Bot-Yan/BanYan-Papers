@@ -102,12 +102,18 @@ export function sanitize(root) {
  * @param {{ note?: (html:string)=>void }} opts
  */
 export async function render(box, src, name, opts = {}) {
-  const note = opts.note || ((html) => { box.innerHTML = `<div class="pad">${html}</div>`; });
+  const isCurrent = opts.isCurrent || (() => true);
+  const showNote = opts.note || ((html) => { box.innerHTML = `<div class="pad">${html}</div>`; });
+  const note = (html) => { if (isCurrent()) showNote(html); };
   const ext = extOf(name);
   const kind = kindOf(name);
   try {
-    if (kind === 'pdf') return await pdf(box, await toBlob(src), note);
-    if (kind === 'image') return media(box, await toBlob(src), IMAGE[ext] || 'image/*', (u) => `<img class="t2-img" src="${u}" alt="">`);
+    if (kind === 'pdf' || kind === 'image') {
+      const blob = await toBlob(src);
+      if (!isCurrent()) return;
+      if (kind === 'pdf') return await pdf(box, blob, note);
+      return media(box, blob, IMAGE[ext] || 'image/*', (u) => `<img class="t2-img" src="${u}" alt="">`);
+    }
     if (kind === 'audio') return audioPlayer(box, typeof src === 'string' ? src : URL.createObjectURL(await toBlob(src)), name);
     if (kind === 'docx') return await word(box, await toBlob(src), note);
     if (kind === 'sheet') return await sheet(box, await toBlob(src), ext);
@@ -116,8 +122,9 @@ export async function render(box, src, name, opts = {}) {
     if (kind === 'legacy-doc') return note('这是旧版 .doc 格式。转成 .docx 后即可在线预览，或直接下载用 Word / WPS 打开。');
     note(`浏览器无法直接渲染 .${ext || '?'}，请下载后打开。`);
   } catch (e) {
+    if (!isCurrent()) return;
     const blob = src instanceof Blob ? src : null;
-    const dl = blob ? `<p><a href="${URL.createObjectURL(blob)}" download="${name}">保存到本地</a></p>` : '';
+    const dl = blob ? `<p><a href="${URL.createObjectURL(blob)}" download="${escapeHtml(name)}">保存到本地</a></p>` : '';
     note(`预览失败：${escapeHtml(e && e.message ? e.message : String(e))}${dl}`);
   }
 }
@@ -349,18 +356,46 @@ async function pdf(box, blob, note) {
   if (workerBroken) {
     lib.GlobalWorkerOptions.workerSrc = '';
     doc = await lib.getDocument({ ...base, disableWorker: true }).promise;
-    if (stale()) { try { doc.destroy(); } catch { /* 已销毁 */ } return; }
   } else {
     try {
       doc = await lib.getDocument(base).promise;
     } catch (e) {
-      // Worker 加载不了时（跨域/被 CSP 拦），主线程再试一次；大文件会慢一点，但能看
+      if (stale()) return;
+      // Worker 加载失败时改用主线程。
       workerBroken = true;
       lib.GlobalWorkerOptions.workerSrc = '';
       doc = await lib.getDocument({ ...base, disableWorker: true }).promise;
     }
   }
-  if (stale()) { try { doc.destroy(); } catch { /* 已销毁 */ } return; }
+  if (stale()) { await doc.destroy().catch(() => {}); return; }
+
+  let io = null, ro = null, rzTimer;
+  let onResize;
+  const cleanup = () => {
+    clearTimeout(rzTimer);
+    if (onResize) {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    }
+    io?.disconnect();
+    ro?.disconnect();
+    void doc.destroy().catch(() => {});
+  };
+  pdfCleanup = cleanup;
+  let first;
+  try {
+    if (doc.numPages) first = await doc.getPage(1);
+  } catch (error) {
+    if (stale()) return;
+    disposePdf();
+    throw error;
+  }
+  if (stale()) return;
+  if (!first) {
+    disposePdf();
+    note('这个 PDF 没有页面。');
+    return;
+  }
 
   box.innerHTML = '';
   const view = document.createElement('div');
@@ -371,7 +406,6 @@ async function pdf(box, blob, note) {
   view.appendChild(meta);
   box.appendChild(view);
 
-  const first = await doc.getPage(1);
   const v1 = first.getViewport({ scale: 1 });
   const pages = [];
   for (let i = 1; i <= doc.numPages; i++) {
@@ -384,7 +418,6 @@ async function pdf(box, blob, note) {
     pages.push(holder);
   }
 
-  let io = null;
   const drawPage = async (holder) => {
     if (holder.dataset.done || stale()) return;
     holder.dataset.done = '1';
@@ -432,13 +465,11 @@ async function pdf(box, blob, note) {
       { root: box, rootMargin: '1200px 0px' },
     );
     pages.forEach((p) => io.observe(p));
-  } else {
-    for (const p of pages.slice(0, 6)) await drawPage(p);
   }
 
   // 转屏 / 窗口变化 / 抽屉宽度变了：按新宽度重画，否则还是旧分辨率被拉伸
-  let rzTimer;
-  const onResize = () => {
+  onResize = () => {
+    if (stale()) return;
     clearTimeout(rzTimer);
     rzTimer = setTimeout(() => {
       for (const p of pages) p.dataset.done = '';
@@ -450,7 +481,6 @@ async function pdf(box, blob, note) {
   window.addEventListener('orientationchange', onResize);
   // 容器本身变宽/变窄（抽屉布局变化、横竖屏切换）也要按新宽度重画，
   // 否则画布会被 CSS 拉伸 —— 那就是"糊"的来源。
-  let ro = null;
   if ('ResizeObserver' in window) {
     let lastW = view.clientWidth;
     ro = new ResizeObserver(() => {
@@ -462,17 +492,7 @@ async function pdf(box, blob, note) {
     ro.observe(view);
   }
 
-  const cleanup = () => {
-    window.removeEventListener('resize', onResize);
-    window.removeEventListener('orientationchange', onResize);
-    if (io) io.disconnect();
-    if (ro) ro.disconnect();
-    try { doc.destroy(); } catch { /* 已销毁/渲染中 */ }
-  };
-  // 渲染期间如果又开了别的 PDF / 关了抽屉（pdfSeq 已变），这次渲染的产物已被丢弃，别抢注清理回调
-  if (seq === pdfSeq) pdfCleanup = cleanup;
-
-  if (!pages.length) note('这个 PDF 没有页面。');
+  if (!io) for (const p of pages.slice(1, 6)) await drawPage(p).catch(() => {});
 }
 
 // ---------------------------------------------------------------- Word（docx-preview）

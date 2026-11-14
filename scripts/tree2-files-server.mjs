@@ -126,25 +126,38 @@ function parseArgs(argv) {
 const cfg = parseArgs(process.argv.slice(2));
 const OBJECTS = path.join(cfg.store, 'objects');
 const TMP = path.join(cfg.store, 'tmp');
+const MAX_PARTS = 4096;
 
 // ---------------------------------------------------------------- 工具
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
+// 清单引用跨届共享对象，口令额度也跨届共享。最终入库、清单修改及口令写入共用队列。
+let libraryWrites = Promise.resolve();
+function writeLibrary(fn) {
+  const run = libraryWrites.then(fn);
+  libraryWrites = run.catch(() => {});
+  return run;
+}
+
+async function writeJsonAtomic(file, value, indent = 2) {
+  const tmp = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fsp.writeFile(tmp, JSON.stringify(value, null, indent));
+    await fsp.rename(tmp, file);
+  } finally {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+  }
+}
 
 // ---------------------------------------------------------------- Navidrome 音频直通
-// 音频预览的字节来自 Navidrome（Subsonic 流接口），本服务有两条路：
-//   ① 流式代理（推荐）：navidrome.json 配了 internal（Navidrome 的内网地址，如
-//      http://127.0.0.1:4533）时，本服务自己去拉流再吐给浏览器——Subsonic 凭证
-//      （t=md5(password+salt)）只在服务器内部出现，不进浏览器，泄露面归零。
-//      Range 透传给 Navidrome，拖动进度不受影响；流量过一遍本服务，同机部署无所谓。
-//   ② 302 兜底：没配 internal 时维持原状——302 把带凭证的流地址直接给浏览器，
-//      任何访客都能拿到一把可长期使用的音乐库 API 凭证，建议尽快配上 internal。
+// 配置 navidrome.json 的 internal 即启用服务端转发，否则直接读取本地对象。
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac']);
 const ND_CFG_FILE = path.join(HERE, '..', 'data', 'navidrome.json');
 const ND_MAP_FILE = path.join(HERE, '..', 'data', 'audio-map.json');
@@ -164,34 +177,13 @@ async function readJsonCached(file, key, mtimeKey) {
       ndCache[mtimeKey] = st.mtimeMs;
     }
   } catch {
-    /* 文件不存在就当作没配置 */
+    ndCache[key] = null;
+    ndCache[mtimeKey] = 0;
   }
   return ndCache[key];
 }
 
-/** sha256 → Navidrome stream URL（Subsonic token 鉴权）；没配置或没映射返回 null。 */
-async function navidromeStreamUrl(sha) {
-  const cfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
-  if (!cfg || !cfg.base || !cfg.user || !cfg.password) return null;
-  const map = await readJsonCached(ND_MAP_FILE, 'map', 'mapMtime');
-  const id = map && map[sha];
-  if (!id) return null;
-  return navidromeStreamUrlById(id, cfg);
-}
-
-/** 已知 Navidrome 歌曲 id 时直接构造流地址（分享音频走这条路）。 */
-function navidromeStreamUrlById(id, cfgOverride) {
-  const cfg = cfgOverride;
-  if (!cfg || !cfg.user || !cfg.password || !id) return null;
-  const salt = crypto.randomBytes(6).toString('hex');
-  const token = crypto.createHash('md5').update(cfg.password + salt).digest('hex');
-  const qs = new URLSearchParams({
-    u: cfg.user, t: token, s: salt, v: '1.16.1', c: 'tree2', id,
-  });
-  return `${cfg.base || '/music'}/rest/stream.view?${qs.toString()}`;
-}
-
-/** 配了 internal（内网地址）时，返回服务端可直连的流地址；没配返回 null（走 302 兜底）。 */
+/** 配了内网地址且音频已同步时，返回服务端可直连的流地址。 */
 async function navidromeProxyStreamUrl(sha) {
   const cfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
   const internal = cfg && (cfg.internal || cfg.internalBase);
@@ -218,34 +210,35 @@ async function proxyAudioStream(req, res, upstreamUrl) {
   // 不会被 30s 卡断；Navidrome 挂死时请求也能及时失败，不至于悬挂占住连接。
   const upstreamCtl = new AbortController();
   const upstreamTimer = setTimeout(() => upstreamCtl.abort(), 30000);
-  let upstream;
+  const disconnect = () => upstreamCtl.abort();
+  res.once('close', disconnect);
+  if (res.destroyed) disconnect();
   try {
-    upstream = await fetch(upstreamUrl, { headers, redirect: 'follow', signal: upstreamCtl.signal });
-  } catch {
+    const upstream = await fetch(upstreamUrl, { method: req.method, headers, redirect: 'error', signal: upstreamCtl.signal });
     clearTimeout(upstreamTimer);
+    if (!upstream.ok && upstream.status !== 416) {
+      await upstream.body?.cancel();
+      throw new HttpError(502, `音频上游返回 HTTP ${upstream.status}`);
+    }
+    const responseHeaders = { ...cors(req), 'Cache-Control': 'no-store' };
+    for (const name of ['content-type', 'accept-ranges', 'content-range', 'content-length']) {
+      const value = upstream.headers.get(name);
+      if (value != null) responseHeaders[name] = value;
+    }
+    if (upstream.headers.has('content-encoding')) delete responseHeaders['content-length'];
+    res.writeHead(upstream.status, responseHeaders);
+    if (!upstream.body) return res.end();
+    await pipeline(Readable.fromWeb(upstream.body), res);
+  } catch (error) {
+    if (res.destroyed) return;
+    if (res.headersSent) return res.destroy();
+    if (error instanceof HttpError) throw error;
     throw new HttpError(502, '音频上游（Navidrome）暂时无法连接，请稍后重试');
+  } finally {
+    clearTimeout(upstreamTimer);
+    res.off('close', disconnect);
+    upstreamCtl.abort();
   }
-  clearTimeout(upstreamTimer);
-  if (!upstream.ok) {
-    await upstream.body?.cancel().catch(() => {});
-    throw new HttpError(502, `音频上游返回 HTTP ${upstream.status}（同步未完成或凭证不对）`);
-  }
-  const h = {
-    'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
-    'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-store',
-  };
-  const contentRange = upstream.headers.get('content-range');
-  if (contentRange) h['Content-Range'] = contentRange;
-  const contentLength = upstream.headers.get('content-length');
-  if (contentLength) h['Content-Length'] = contentLength;
-  res.writeHead(upstream.status, { ...cors(req), ...h });
-  if (req.method === 'HEAD' || !upstream.body) return res.end();
-  await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {
-    // 管道失败（多半是客户端断开/拖动进度重发 Range）：撤掉上游响应体，
-    // 不然 undici 会把整首歌继续拉完，白白占着连接和流量
-    upstream.body?.cancel().catch(() => {});
-  });
 }
 
 // ------------------------------------------------------------- 旧版分享注册表（只读兼容）
@@ -284,10 +277,10 @@ const route = (method, re, fn) => router.push({ method, re, fn });
 
 function cors(req) {
   const origin = req.headers.origin || '';
-  const allow = cfg.allowOrigin.includes('*') ? '*' : cfg.allowOrigin.includes(origin) ? origin : cfg.allowOrigin[0] || '';
+  const allow = cfg.allowOrigin.includes('*') ? '*' : cfg.allowOrigin.includes(origin) ? origin : '';
   return {
-    'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'GET, HEAD, PUT, POST, OPTIONS',
+    ...(allow ? { 'Access-Control-Allow-Origin': allow } : {}),
+    'Access-Control-Allow-Methods': 'GET, HEAD, PUT, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Tree2, X-Tree2-Token',
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Content-Disposition, X-Tree2-Sha256',
     'Access-Control-Max-Age': '600',
@@ -415,7 +408,7 @@ function recalcManifestStats(m) {
 route('GET', /^\/api\/tree2\/seasons$/, async (req, res) => {
   requireRead(req);
   const raw = await fsp.readFile(path.join(cfg.data, 'seasons.json'), 'utf8').catch(() => '{"schema":"tree2/1","seasons":[]}');
-  json(res, 200, JSON.parse(raw));
+  json(res, 200, JSON.parse(raw), { 'Cache-Control': cfg.privateRead ? 'no-store' : 'no-cache' });
 });
 
 route('GET', /^\/api\/tree2\/seasons\/([^/]+)$/, async (req, res, [, year]) => {
@@ -425,11 +418,12 @@ route('GET', /^\/api\/tree2\/seasons\/([^/]+)$/, async (req, res, [, year]) => {
   // 清单只在增删文件时才变：给内容算 ETag，浏览器每次进站带着 If-None-Match 来验证，
   // 没变就 304 空响应——以前是每次全量重拉（gzip 后 ~87KB × 每次进站，9 天 243 MB）
   const etag = `"${createHash('sha1').update(raw).digest('hex').slice(0, 20)}"`;
+  const cacheControl = cfg.privateRead ? 'no-store' : 'no-cache';
   if (req.headers['if-none-match'] === etag) {
-    res.writeHead(304, { ...cors(req), ETag: etag, 'Cache-Control': 'no-cache' });
+    res.writeHead(304, { ...cors(req), ETag: etag, 'Cache-Control': cacheControl });
     return res.end();
   }
-  res.writeHead(200, { ...cors(req), 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache', ETag: etag });
+  res.writeHead(200, { ...cors(req), 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheControl, ETag: etag });
   res.end(raw);
 });
 
@@ -441,7 +435,7 @@ route('GET', /^\/api\/tree2\/storage\/([^/]+)$/, async (req, res, [, year]) => {
   const objects = await objectKeys();
   const known = await manifestKeys(year);
   const keys = [...known].filter((k) => objects.has(k));
-  json(res, 200, { year, enabled: true, source: 'local', count: keys.length, keys });
+  json(res, 200, { year, enabled: true, source: 'local', count: keys.length, keys }, { 'Cache-Control': cfg.privateRead ? 'no-store' : 'no-cache' });
 });
 
 // 黑胶页直达 id：库内点音频预览时前端先问这个接口；share-map 有映射就整页跳
@@ -466,6 +460,16 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
 
   // ① 秒传探测：内容哈希 → 文件是否已在库
   if (/^[0-9a-f]{64}$/.test(sha)) {
+    if (url.searchParams.has('ext')) {
+      const ext = url.searchParams.get('ext');
+      if (ext && !/^\.[a-z0-9]{1,8}$/.test(ext)) throw new HttpError(400, '扩展名不合法');
+      const key = `${sha.slice(0, 2)}/${sha}${ext}`;
+      const stat = await fsp.stat(objPath(key)).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      return json(res, 200, { exists: Boolean(stat?.isFile()), key: stat?.isFile() ? key : null });
+    }
     const known = await manifestKeys(year);
     const objects = await objectKeysCached();
     const hit = [...known].find((k) => k.includes(`/${sha}`)) || [...objects].find((k) => k.includes(`/${sha}`));
@@ -477,19 +481,12 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
   const name = String(url.searchParams.get('n') || path.basename(key)).replace(/[\r\n"]/g, '');
   const download = url.searchParams.get('download') === '1';
 
-  // 音频预览：优先服务端代理 Navidrome 流（凭证不出服务器）；
-  // 没配 internal 才回退 302（带着 Subsonic 凭证，见文件头「Navidrome 音频直通」注释）。
-  // 下载不受影响，走下面的本地字节流。
+  // 音频预览优先走内网代理；下载和未同步的音频使用本地对象。
   const audioExt = path.extname(key).toLowerCase();
   if (AUDIO_EXT.has(audioExt) && !download) {
     const sha = path.basename(key, audioExt);
     const proxyUrl = await navidromeProxyStreamUrl(sha);
     if (proxyUrl) return proxyAudioStream(req, res, proxyUrl);
-    // 音频预览一律交给 Navidrome；映射缺失才回 404（navidrome-sync 每小时补一次）
-    const target = await navidromeStreamUrl(sha);
-    if (!target) throw new HttpError(404, '该音频还没同步到 Navidrome，稍后再试（每小时同步一次）');
-    res.writeHead(302, { ...cors(req), Location: target, 'Cache-Control': 'no-store' });
-    return res.end();
   }
   return serveObjectBytes(req, res, key, name, { download });
 });
@@ -710,7 +707,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
   } else if (['.mp4', '.webm'].includes(ext)) {
     preview = `<div class="preview"><video controls preload="metadata" src="${escHtml(filesUrl)}"></video></div>`;
   } else if (AUDIO_EXT.has(ext)) {
-    // files 对音频本来就是 302 到 Navidrome 流，这里直接挂 files 地址就能播
+    // 音频由 files 路由流式输出。
     preview =
       `<div class="preview"><audio controls preload="metadata" src="${escHtml(filesUrl)}"></audio>` +
       (audioPending ? `<p class="hint">音频正在同步到音乐库，同步完成后这个链接会直接打开在线播放页（最多一小时）。</p>` : ``) +
@@ -869,7 +866,7 @@ route('GET', /^\/s\/([A-Za-z0-9]{4,64})$/, async (req, res, [, id]) => {
     return res.end(SHARE_404_HTML);
   }
   mutateShares(async (list) => list.map((s) => (s.id === entry.id ? { ...s, visits: (s.visits || 0) + 1 } : s))).catch(() => {});
-  // 音频：沿用注册表里登记过的黑胶页映射；没有则走落地页（files 对音频本来就是 302 到 Navidrome 流）
+  // 音频：优先使用注册表里的黑胶页映射，否则走落地页。
   const nd = (await readJsonCached(SHARE_ND_FILE, 'shareNd', 'shareNdMtime')) || {};
   const info = nd[entry.id];
   const isAudio = AUDIO_EXT.has(entry.ext);
@@ -1193,94 +1190,107 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
   const segs = folder.split('/').filter(Boolean);
   if (!segs.length) throw new HttpError(400, 'path 不合法');
 
-  const file = path.join(cfg.data, `${year}.json`);
-  const raw = await fsp.readFile(file, 'utf8').catch(() => null);
-  if (!raw) throw new HttpError(404, '清单不存在');
-  const manifest = JSON.parse(raw);
-  const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
-  if (!batch) throw new HttpError(404, '批次不存在');
+  return writeLibrary(async () => {
+    const file = path.join(cfg.data, `${year}.json`);
+    const raw = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (!raw) throw new HttpError(404, '清单不存在');
+    const manifest = JSON.parse(raw);
+    const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
+    if (!batch) throw new HttpError(404, '批次不存在');
 
-  let parentNode = null;
-  let node = batch.tree;
-  for (const s2 of segs.slice(1)) {
-    parentNode = node;
-    node = (node.c || []).find((c) => c.t === 'd' && c.n === s2);
-    if (!node) throw new HttpError(404, '子目录不存在');
-  }
+    let parentNode = null;
+    let node = batch.tree;
+    for (const s2 of segs.slice(1)) {
+      parentNode = node;
+      node = (node.c || []).find((c) => c.t === 'd' && c.n === s2);
+      if (!node) throw new HttpError(404, '子目录不存在');
+    }
 
-  // 收集子树里所有带存储键的文件节点（过滤前），供清单写盘后的引用检查做垃圾回收
-  const collectKeys = (n, out = []) => {
-    for (const c of n.c || []) {
-      if (c.t === 'd') collectKeys(c, out);
-      else if (c.k) out.push(c.k);
+    // 收集子树里所有带存储键的文件节点（过滤前），供清单写盘后的引用检查做垃圾回收
+    const collectKeys = (n, out = []) => {
+      for (const c of n.c || []) {
+        if (c.t === 'd') collectKeys(c, out);
+        else if (c.k) out.push(c.k);
+      }
+      return out;
+    };
+    let removedFiles = 0;
+    let removedName = '';
+    let removedKeys = [];
+    if (name) {
+      const victim = (node.c || []).find((c) => c.t === 'f' && c.n === name);
+      removedKeys = victim && victim.k ? [victim.k] : [];
+      const before = (node.c || []).length;
+      node.c = (node.c || []).filter((c) => !(c.t === 'f' && c.n === name));
+      removedFiles = before - (node.c || []).length;
+      if (!removedFiles) throw new HttpError(404, '文件不存在');
+      removedName = name;
+    } else if (parentNode) {
+      removedFiles = countTreeFiles(node);
+      removedKeys = collectKeys(node);
+      parentNode.c = (parentNode.c || []).filter((c) => c.n !== segs[segs.length - 1]);
+      removedName = segs[segs.length - 1];
+    } else {
+      removedFiles = countTreeFiles(node);
+      removedKeys = collectKeys(node);
+      manifest.batches = manifest.batches.filter((b) => b.name !== segs[0]);
+      removedName = segs[0];
     }
-    return out;
-  };
-  let removedFiles = 0;
-  let removedName = '';
-  let removedKeys = [];
-  if (name) {
-    const victim = (node.c || []).find((c) => c.t === 'f' && c.n === name);
-    removedKeys = victim && victim.k ? [victim.k] : [];
-    const before = (node.c || []).length;
-    node.c = (node.c || []).filter((c) => !(c.t === 'f' && c.n === name));
-    removedFiles = before - (node.c || []).length;
-    if (!removedFiles) throw new HttpError(404, '文件不存在');
-    removedName = name;
-  } else if (parentNode) {
-    removedFiles = countTreeFiles(node);
-    removedKeys = collectKeys(node);
-    parentNode.c = (parentNode.c || []).filter((c) => c.n !== segs[segs.length - 1]);
-    removedName = segs[segs.length - 1];
-  } else {
-    removedFiles = countTreeFiles(node);
-    removedKeys = collectKeys(node);
-    manifest.batches = manifest.batches.filter((b) => b.name !== segs[0]);
-    removedName = segs[0];
-  }
 
-  // 重新统计
-  recalcManifestStats(manifest);
+    // 重新统计
+    recalcManifestStats(manifest);
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(manifest, null, 2));
-  await fsp.rename(tmp, file);
-  manifestCache.delete(year);
-  // —— 垃圾回收：被移除的存储键若已无引用，连对象本体一起删 ——
-  // 引用面：所有届的清单（^\d{4}\.json$，刚写盘的当前届已不含本次移除的条目，
-  // 其余届可能有同内容去重条目）+ audio-map / share-map / shares（键为裸 sha256）。
-  // 用原文包含做保守判断：宁可少删，不可误删还在用的对象。
-  // uplog 只是历史日志，不算引用；preview-cache 不归本服务管，不动。
-  const deletedObjects = [];
-  if (removedKeys.length) {
-    const refChunks = [];
-    for (const f of (await fsp.readdir(cfg.data)).filter((f) => /^\d{4}\.json$/.test(f))) {
-      refChunks.push(await fsp.readFile(path.join(cfg.data, f), 'utf8').catch(() => ''));
+    await writeJsonAtomic(file, manifest);
+    manifestCache.delete(year);
+    // —— 垃圾回收：被移除的存储键若已无引用，连对象本体一起删 ——
+    // 引用面：所有届的清单（^\d{4}\.json$，刚写盘的当前届已不含本次移除的条目，
+    // 其余届可能有同内容去重条目）+ audio-map / share-map / shares（键为裸 sha256）。
+    // 用原文包含做保守判断：宁可少删，不可误删还在用的对象。
+    // uplog 只是历史日志，不算引用；preview-cache 不归本服务管，不动。
+    const deletedObjects = [];
+    if (removedKeys.length) {
+      const refChunks = [];
+      try {
+        for (const f of (await fsp.readdir(cfg.data)).filter((f) => /^\d{4}\.json$/.test(f))) {
+          refChunks.push(await fsp.readFile(path.join(cfg.data, f), 'utf8'));
+        }
+        for (const f of [ND_MAP_FILE, ND_SHARE_FILE, SHARES_FILE]) {
+          refChunks.push(await fsp.readFile(f, 'utf8').catch(error => {
+            if (error.code !== 'ENOENT') throw error;
+            return '';
+          }));
+        }
+        const refs = refChunks.join('\n');
+        for (const k of removedKeys) {
+          const sha = path.basename(k, path.extname(k));
+          if (!sha || refs.includes(sha)) continue;
+          try {
+            await fsp.unlink(objPath(k));
+            deletedObjects.push(k);
+            invalidateObjectKeys();
+          } catch (error) {
+            if (error.code !== 'ENOENT') console.error('[tree2] 对象回收失败', error);
+          }
+        }
+      } catch (error) {
+        console.error('[tree2] 引用检查失败，保留对象', error);
+      }
     }
-    for (const f of [ND_MAP_FILE, ND_SHARE_FILE, SHARES_FILE]) {
-      refChunks.push(await fsp.readFile(f, 'utf8').catch(() => ''));
-    }
-    const refs = refChunks.join('\n');
-    for (const k of removedKeys) {
-      const sha = path.basename(k, path.extname(k));
-      if (!sha || refs.includes(sha)) continue;
-      try { await fsp.unlink(objPath(k)); deletedObjects.push(k); invalidateObjectKeys(); } catch { /* 本体可能本来就不在 */ }
-    }
-  }
-  // 删除事件也要写进 uplog，和改名对称：清单是从本地目录全量重扫派生的，
-  // 只改服务器清单不动本地文件的话，下一次发布会把删掉的东西原样加回来。
-  // tree2-publish 开头读到这条就把本地对应文件移进下架回收区，重扫自然没有它。
-  await appendUplog({
-    type: 'remove',
-    season: year,
-    kind: name ? 'file' : segs.length > 1 ? 'dir' : 'batch',
-    path: name ? `${segs.join('/')}/${name}` : segs.join('/'),
-    files: removedFiles,
-    deletedObjects,
-    actor: actorOf(req),
-    at: new Date().toISOString(),
+    // 删除事件也要写进 uplog，和改名对称：清单是从本地目录全量重扫派生的，
+    // 只改服务器清单不动本地文件的话，下一次发布会把删掉的东西原样加回来。
+    // tree2-publish 开头读到这条就把本地对应文件移进下架回收区，重扫自然没有它。
+    await appendUplog({
+      type: 'remove',
+      season: year,
+      kind: name ? 'file' : segs.length > 1 ? 'dir' : 'batch',
+      path: name ? `${segs.join('/')}/${name}` : segs.join('/'),
+      files: removedFiles,
+      deletedObjects,
+      actor: actorOf(req),
+      at: new Date().toISOString(),
+    });
+    json(res, 200, { ok: true, removedFiles, removedName, deletedObjects });
   });
-  json(res, 200, { ok: true, removedFiles, removedName, deletedObjects });
 });
 
 // ---------------- 重命名（管理，要口令） ----------------
@@ -1303,74 +1313,74 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
   }
   if (newName.length > 120) throw new HttpError(400, '新名字太长（≤120 字）');
 
-  const file = path.join(cfg.data, `${year}.json`);
-  const raw = await fsp.readFile(file, 'utf8').catch(() => null);
-  if (!raw) throw new HttpError(404, '清单不存在');
-  const manifest = JSON.parse(raw);
-  const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
-  if (!batch) throw new HttpError(404, '批次不存在');
+  return writeLibrary(async () => {
+    const file = path.join(cfg.data, `${year}.json`);
+    const raw = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (!raw) throw new HttpError(404, '清单不存在');
+    const manifest = JSON.parse(raw);
+    const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
+    if (!batch) throw new HttpError(404, '批次不存在');
 
-  let renamed = '';
-  if (name) {
-    // 文件重命名：扩展名不能变（存储键 = sha256+扩展名，改了就对不上对象）
-    const oldExt = (/\.[a-z0-9]{1,8}$/i.exec(name) || [''])[0].toLowerCase();
-    const newExt = (/\.[a-z0-9]{1,8}$/i.exec(newName) || [''])[0].toLowerCase();
-    if (oldExt !== newExt) throw new HttpError(400, '扩展名不能改（会破坏存储键），只改名字部分');
-    let node = batch.tree;
-    for (const s2 of segs.slice(1)) {
-      node = (node.c || []).find((c) => c.t === 'd' && c.n === s2);
-      if (!node) throw new HttpError(404, '子目录不存在');
+    let renamed = '';
+    if (name) {
+      // 文件重命名：扩展名不能变（存储键 = sha256+扩展名，改了就对不上对象）
+      const oldExt = (/\.[a-z0-9]{1,8}$/i.exec(name) || [''])[0].toLowerCase();
+      const newExt = (/\.[a-z0-9]{1,8}$/i.exec(newName) || [''])[0].toLowerCase();
+      if (oldExt !== newExt) throw new HttpError(400, '扩展名不能改（会破坏存储键），只改名字部分');
+      let node = batch.tree;
+      for (const s2 of segs.slice(1)) {
+        node = (node.c || []).find((c) => c.t === 'd' && c.n === s2);
+        if (!node) throw new HttpError(404, '子目录不存在');
+      }
+      const target = (node.c || []).find((c) => c.t === 'f' && c.n === name);
+      if (!target) throw new HttpError(404, '文件不存在');
+      if ((node.c || []).some((c) => c.t === 'f' && c.n === newName && c !== target)) {
+        throw new HttpError(409, '同级已有同名文件');
+      }
+      target.n = newName;
+      renamed = 'file';
+    } else if (segs.length > 1) {
+      // 子目录重命名
+      let parent = batch.tree;
+      for (const s2 of segs.slice(1, -1)) {
+        parent = (parent.c || []).find((c) => c.t === 'd' && c.n === s2);
+        if (!parent) throw new HttpError(404, '子目录不存在');
+      }
+      const dirName = segs[segs.length - 1];
+      const target = (parent.c || []).find((c) => c.t === 'd' && c.n === dirName);
+      if (!target) throw new HttpError(404, '子目录不存在');
+      if ((parent.c || []).some((c) => c.t === 'd' && c.n === newName && c !== target)) {
+        throw new HttpError(409, '同级已有同名目录');
+      }
+      target.n = newName;
+      renamed = 'dir';
+    } else {
+      // 批次重命名
+      if ((manifest.batches || []).some((b) => b.name === newName && b !== batch)) {
+        throw new HttpError(409, '已有同名批次');
+      }
+      const oldName = batch.name;
+      batch.name = newName;
+      if (batch.tree && batch.tree.n === oldName) batch.tree.n = newName;
+      // 阶段/类型/日期都从名字推导：改名后必须重算，否则前端按 stage 分组会挂在旧阶段下
+      batch.stage = t2StageOf(newName);
+      batch.type = t2TypeOf(newName);
+      // 日期从名字里提（如 2026.12 / 2025-8 / 2026年3月）；此前正则写成 d{4}（少了反斜杠），
+      // 永远匹配不上，每次重命名都把 date 清空
+      batch.date = (/(\d{4}[.\-年]\d{1,2})/.exec(newName) || [, ''])[1];
+      renamed = 'batch';
     }
-    const target = (node.c || []).find((c) => c.t === 'f' && c.n === name);
-    if (!target) throw new HttpError(404, '文件不存在');
-    if ((node.c || []).some((c) => c.t === 'f' && c.n === newName && c !== target)) {
-      throw new HttpError(409, '同级已有同名文件');
-    }
-    target.n = newName;
-    renamed = 'file';
-  } else if (segs.length > 1) {
-    // 子目录重命名
-    let parent = batch.tree;
-    for (const s2 of segs.slice(1, -1)) {
-      parent = (parent.c || []).find((c) => c.t === 'd' && c.n === s2);
-      if (!parent) throw new HttpError(404, '子目录不存在');
-    }
-    const dirName = segs[segs.length - 1];
-    const target = (parent.c || []).find((c) => c.t === 'd' && c.n === dirName);
-    if (!target) throw new HttpError(404, '子目录不存在');
-    if ((parent.c || []).some((c) => c.t === 'd' && c.n === newName && c !== target)) {
-      throw new HttpError(409, '同级已有同名目录');
-    }
-    target.n = newName;
-    renamed = 'dir';
-  } else {
-    // 批次重命名
-    if ((manifest.batches || []).some((b) => b.name === newName && b !== batch)) {
-      throw new HttpError(409, '已有同名批次');
-    }
-    const oldName = batch.name;
-    batch.name = newName;
-    if (batch.tree && batch.tree.n === oldName) batch.tree.n = newName;
-    // 阶段/类型/日期都从名字推导：改名后必须重算，否则前端按 stage 分组会挂在旧阶段下
-    batch.stage = t2StageOf(newName);
-    batch.type = t2TypeOf(newName);
-    // 日期从名字里提（如 2026.12 / 2025-8 / 2026年3月）；此前正则写成 d{4}（少了反斜杠），
-    // 永远匹配不上，每次重命名都把 date 清空
-    batch.date = (/(\d{4}[.\-年]\d{1,2})/.exec(newName) || [, ''])[1];
-    renamed = 'batch';
-  }
 
-  // 重新统计（与 remove 同款；此前漏了 totals，首页合计会停在旧数字）
-  recalcManifestStats(manifest);
+    // 重新统计（与 remove 同款；此前漏了 totals，首页合计会停在旧数字）
+    recalcManifestStats(manifest);
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(manifest, null, 2));
-  await fsp.rename(tmp, file);
-  manifestCache.delete(year);
-  // 改名事件写进 uplog：tree2-publish 开头会把它应用到本地文件夹，
-  // 否则下次发布会用本地旧名把云端新名覆盖回去
-  await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, actor: actorOf(req), at: new Date().toISOString() });
-  json(res, 200, { ok: true, kind: renamed, newName });
+    await writeJsonAtomic(file, manifest);
+    manifestCache.delete(year);
+    // 改名事件写进 uplog：tree2-publish 开头会把它应用到本地文件夹，
+    // 否则下次发布会用本地旧名把云端新名覆盖回去
+    await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, actor: actorOf(req), at: new Date().toISOString() });
+    json(res, 200, { ok: true, kind: renamed, newName });
+  });
 });
 
 // ---------------- 预建空批次（admin：先建批次再发顾客口令） ----------------
@@ -1380,29 +1390,22 @@ route('POST', /^\/api\/tree2\/batch$/, async (req, res) => {
   const year = safeYear(body.year);
   const name = String(body.name || '').trim().replace(/^\/+|\/+$/g, '');
   if (!name) throw new HttpError(400, '批次名不能为空');
-  if (/[\\/]/.test(name)) throw new HttpError(400, '批次名不能带斜杠');
+  if (name === '.' || name === '..' || /[\\/\x00-\x1f]/.test(name)) throw new HttpError(400, '批次名不合法');
   if (name.length > 120) throw new HttpError(400, '批次名太长（≤120 字）');
-  const file = path.join(cfg.data, year + '.json');
-  const raw = await fsp.readFile(file, 'utf8').catch(() => null);
-  if (!raw) throw new HttpError(404, '这一届的清单还没生成');
-  const m = JSON.parse(raw);
-  m.batches = m.batches || [];
-  if (m.batches.some((b) => b.name === name)) return json(res, 200, { ok: true, created: false });
-  m.batches.push({
-    name,
-    stage: t2StageOf(name),
-    type: t2TypeOf(name),
-    date: (/(\d{4}[.\-年]\d{1,2})/.exec(name) || [, ''])[1],
-    files: 0, dirs: 0, bytes: 0, subj: [],
-    tree: { n: name, t: 'd', c: [] },
+  return writeLibrary(async () => {
+    const file = path.join(cfg.data, year + '.json');
+    const raw = await fsp.readFile(file, 'utf8').catch(() => null);
+    if (!raw) throw new HttpError(404, '这一届的清单还没生成');
+    const m = JSON.parse(raw);
+    m.batches = m.batches || [];
+    if (m.batches.some((b) => b.name === name)) return json(res, 200, { ok: true, created: false });
+    m.batches.push(newBatch(name));
+    m.batches.sort(sortNames);
+    recalcManifestStats(m); // 统一走共享实现（batch / attach / remove / rename 同款）
+    await writeJsonAtomic(file, m);
+    manifestCache.delete(year);
+    json(res, 200, { ok: true, created: true, stage: t2StageOf(name) });
   });
-  m.batches.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }));
-  recalcManifestStats(m); // 统一走共享实现（batch / attach / remove / rename 同款）
-  const tmp = file + '.' + process.pid + '.tmp';
-  await fsp.writeFile(tmp, JSON.stringify(m, null, 2));
-  await fsp.rename(tmp, file);
-  manifestCache.delete(year);
-  json(res, 200, { ok: true, created: true, stage: t2StageOf(name) });
 });
 
 // ---------------- 顾客口令管理（admin） ----------------
@@ -1411,38 +1414,49 @@ route('GET', /^\/api\/tree2\/ctoken$/, async (req, res) => {
   const list = await loadCTokens();
   json(res, 200, {
     daily: dailyToken(todayCN()),
-    tokens: list.map((r) => ({ id: r.id, token: r.token, batches: r.batches, maxUses: r.maxUses || null, uses: r.uses || 0, expiresAt: r.expiresAt || null, createdAt: r.createdAt })),
+    tokens: list.map((r) => ({ id: r.id, token: r.token, batches: r.batches, batchYear: r.batchYear, maxUses: r.maxUses || null, uses: r.uses || 0, expiresAt: r.expiresAt || null, createdAt: r.createdAt })),
   });
 });
 
 route('POST', /^\/api\/tree2\/ctoken$/, async (req, res) => {
   requireWrite(req);
   const body = JSON.parse((await readBody(req, 16 * 1024)) || '{}');
-  const batches = Array.isArray(body.batches) ? body.batches.map((b) => String(b).slice(0, 120)).filter(Boolean) : [];
-  if (!batches.length) throw new HttpError(400, '必须指定至少一个批次');
-  if (new Set(batches).size !== batches.length) throw new HttpError(400, '批次重复');
-  const maxUses = body.maxUses ? Math.min(10000, Math.max(1, Number(body.maxUses) | 0)) : null;
-  const ttlHours = body.ttlHours ? Math.min(8760, Math.max(1, Number(body.ttlHours) | 0)) : null;
-  const rec = {
-    id: randomBytes(6).toString('hex'),
-    token: randomBytes(16).toString('hex'),
-    batches, maxUses, uses: 0,
-    expiresAt: ttlHours ? Date.now() + ttlHours * 3600 * 1000 : null,
-    createdAt: new Date().toISOString(),
-  };
-  const list = await loadCTokens();
-  list.push(rec);
-  await saveCTokens(list);
-  json(res, 200, { token: rec.token, id: rec.id, expiresAt: rec.expiresAt });
+  const requested = body.batches;
+  if (!Array.isArray(requested) || !requested.length || requested.length > 20) throw new HttpError(400, '请指定 1–20 个批次');
+  const maxUses = optionalPositiveInteger(body.maxUses, 10000, '使用次数');
+  const ttlHours = optionalPositiveInteger(body.ttlHours, 8760, '有效期');
+  return writeLibrary(async () => {
+    const available = await listTokenBatches();
+    const batchYear = requested.map(batch => {
+      const name = typeof batch === 'string' ? batch : batch?.name;
+      if (typeof name !== 'string' || !name.trim() || name.length > 120) throw new HttpError(400, '批次名不合法');
+      const year = typeof batch === 'string' ? null : safeYear(batch.year);
+      const matches = available.filter(b => b.name === name && (year === null || year === b.year));
+      if (matches.length !== 1) throw new HttpError(400, '批次不存在或有同名批次，请按届别指定');
+      return matches[0];
+    });
+    if (new Set(batchYear.map(({ year, name }) => `${year}/${name}`)).size !== batchYear.length) throw new HttpError(400, '批次重复');
+    const rec = {
+      id: randomBytes(6).toString('hex'),
+      token: randomBytes(16).toString('hex'),
+      batches: [...new Set(batchYear.map(b => b.name))], batchYear, maxUses, uses: 0,
+      expiresAt: ttlHours ? Date.now() + ttlHours * 3600 * 1000 : null,
+      createdAt: new Date().toISOString(),
+    };
+    await saveCTokens([...(await loadCTokens()), rec]);
+    json(res, 200, { token: rec.token, id: rec.id, expiresAt: rec.expiresAt });
+  });
 });
 
 route('DELETE', /^\/api\/tree2\/ctoken\/([0-9a-f]{12})$/, async (req, res, [, id]) => {
   requireWrite(req);
-  const list = await loadCTokens();
-  const next = list.filter((r) => r.id !== id);
-  if (next.length === list.length) throw new HttpError(404, '这个口令不存在');
-  await saveCTokens(next);
-  json(res, 200, { ok: true });
+  return writeLibrary(async () => {
+    const list = await loadCTokens();
+    const next = list.filter((r) => r.id !== id);
+    if (next.length === list.length) throw new HttpError(404, '这个口令不存在');
+    await saveCTokens(next);
+    json(res, 200, { ok: true });
+  });
 });
 
 // 顾客口令校验（公开，只返回非敏感信息；token 是 128-bit 随机值，无法枚举）
@@ -1452,15 +1466,11 @@ route('GET', /^\/api\/tree2\/ctoken-check$/, async (req, res, m, url) => {
   const list = await loadCTokens();
   const rec = list.find((r) => r.token === t);
   if (rec) {
-    if (rec.expiresAt && Date.now() > rec.expiresAt) return json(res, 403, { error: '该口令已过有效期' });
-    if (rec.maxUses && (rec.uses || 0) >= rec.maxUses) return json(res, 403, { error: '该口令的可用次数已用完' });
-    // once 口令绑定的批次可能分散在不同届：扫清单标注每批次的届别
-    const batchYear = [];
-    for (const y of (await fsp.readdir(cfg.data)).filter((f) => /^\d{4}\.json$/.test(f)).map((f) => f.slice(0, 4))) {
-      const m2 = JSON.parse(await fsp.readFile(path.join(cfg.data, y + '.json'), 'utf8').catch(() => 'null'));
-      for (const b of (m2.batches || [])) if (rec.batches.includes(b.name)) batchYear.push({ name: b.name, year: y });
-    }
-    return json(res, 200, { kind: 'once', batches: rec.batches, batchYear, remaining: rec.maxUses ? rec.maxUses - (rec.uses || 0) : null, expiresAt: rec.expiresAt });
+    checkTokenAvailability(rec);
+    const availableBatches = await listTokenBatches();
+    const batchYear = (rec.batchYear || []).filter(scope => availableBatches.some(b => b.year === scope.year && b.name === scope.name));
+    if (!batchYear.length) throw new HttpError(403, '口令的批次已不存在，请联系管理员');
+    return json(res, 200, { kind: 'once', batches: batchYear.map(b => b.name), batchYear, remaining: rec.maxUses ? rec.maxUses - (rec.uses || 0) : null, expiresAt: rec.expiresAt });
   }
   if (t === dailyToken(todayCN())) return json(res, 200, { kind: 'daily', batches: null });
   return json(res, 404, { error: '口令无效' });
@@ -1469,37 +1479,72 @@ route('GET', /^\/api\/tree2\/ctoken-check$/, async (req, res, m, url) => {
 // ---------------------------------------------------------------- 接口：上传
 
 route('PUT', /^\/api\/tree2\/files\/([^/]+)\/part$/, async (req, res, [, year], url) => {
-  await classifyWrite(req); // admin 主口令 / daily / once 均可传分片
+  const auth = await classifyWrite(req);
   safeYear(year);
   const key = safeKey(url.searchParams.get('k'));
-  const i = Number(url.searchParams.get('i'));
-  const n = Number(url.searchParams.get('n') || 1);
-  if (!Number.isInteger(i) || i < 0 || i >= n || n < 1 || n > 4096) throw new HttpError(400, '分片序号不合法');
+  const index = url.searchParams.get('i'), count = url.searchParams.has('n') ? url.searchParams.get('n') : '1';
+  const i = Number(index), n = Number(count);
+  if (!/^\d+$/.test(index || '') || !/^\d+$/.test(count || '') || i >= n || n > MAX_PARTS) throw new HttpError(400, '分片序号不合法');
 
-  const dir = path.join(TMP, key.replace('/', '_'));
+  const dir = uploadDirectory(year, key, auth, url.searchParams.get('uploadId'));
   await fsp.mkdir(dir, { recursive: true });
   const target = path.join(dir, `${i}.part`);
-  const limit = cfg.maxPart + 1024;
+  const tempPart = `${target}.${crypto.randomUUID()}.tmp`;
   let got = 0;
-  let overflow = false;
   const hash = createHash('sha256');
-  const out = fs.createWriteStream(target);
-  req.on('data', (c) => {
-    got += c.length;
-    if (got > limit) {
-      overflow = true;
-      req.destroy();
-    } else hash.update(c);
-  });
   try {
-    await pipeline(req, out);
-  } catch {
-    await fsp.rm(target, { force: true });
-    throw new HttpError(overflow ? 413 : 400, overflow ? '分片太大（上限 8 MB）' : '上传中断');
+    await pipeline(async function* () {
+      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+        got += chunk.length;
+        if (got > cfg.maxPart + 1024) throw new HttpError(413, '分片太大（上限 8 MB）');
+        hash.update(chunk);
+        yield chunk;
+      }
+    }, fs.createWriteStream(tempPart, { flags: 'wx' }));
+    await fsp.rename(tempPart, target);
+    const now = new Date();
+    await fsp.utimes(dir, now, now);
+  } catch (error) {
+    if (!req.complete && !req.destroyed) {
+      res.setHeader('Connection', 'close');
+      req.resume();
+    }
+    throw error;
+  } finally {
+    await fsp.rm(tempPart, { force: true }).catch(() => {});
   }
-  if (overflow) throw new HttpError(413, '分片太大（上限 8 MB）');
   json(res, 200, { index: i, size: got, sha256: hash.digest('hex') });
 });
+
+function uploadDirectory(year, key, auth, uploadId) {
+  if (uploadId != null && (typeof uploadId !== 'string' || !/^[0-9a-f]{32}$/.test(uploadId))) {
+    throw new HttpError(400, '上传会话不合法');
+  }
+  const scope = createHash('sha256').update(JSON.stringify([year, key, auth.kind, auth.rec?.id, uploadId ?? null])).digest('hex');
+  return path.join(TMP, scope);
+}
+
+async function mergeParts(dir, parts, tempFile, expect) {
+  let size = 0;
+  const hash = createHash('sha256');
+  await pipeline(async function* () {
+    for (let i = 0; i < parts; i++) {
+      const piece = path.join(dir, `${i}.part`);
+      const stat = await fsp.stat(piece).catch(error => {
+        if (error.code === 'ENOENT') throw new HttpError(409, `缺第 ${i} 片，请重传`);
+        throw error;
+      });
+      if (!stat.isFile()) throw new HttpError(409, `缺第 ${i} 片，请重传`);
+      for await (const chunk of fs.createReadStream(piece)) {
+        size += chunk.length;
+        hash.update(chunk);
+        yield chunk;
+      }
+    }
+  }, fs.createWriteStream(tempFile, { flags: 'wx' }));
+  if (hash.digest('hex') !== expect) throw new HttpError(422, '内容校验失败：合并后的 sha256 与上传前不一致');
+  return size;
+}
 
 route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year]) => {
   const auth = await classifyWrite(req); // admin 主口令 / daily / once
@@ -1511,13 +1556,12 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   // parts 必须显式给出且是真正的整数（秒传为 0）：不做 Number 强转，
   // 否则 Number(null)===0、Number('')===0、Number([])===0 都会被当成秒传
   if (body.parts == null) throw new HttpError(400, '缺少 parts（分片数，秒传传 0）');
-  if (!Number.isInteger(body.parts) || body.parts < 0 || body.parts > 4096) throw new HttpError(400, '分片数不合法');
+  if (!Number.isInteger(body.parts) || body.parts < 0 || body.parts > MAX_PARTS) throw new HttpError(400, '分片数不合法');
   const parts = body.parts;
-  if (auth.kind === 'once') {
-    const firstSeg = String(body.folder || '').split('/').filter(Boolean)[0] || '';
-    if (!auth.rec.batches.includes(firstSeg)) {
-      throw new HttpError(403, '该口令只能上传到：' + auth.rec.batches.join('、'));
-    }
+  const folder = String(body.folder || '').split('/').filter(Boolean);
+  const name = String(body.name || '').split(/[\\/]/).pop();
+  if (!name || [name, ...folder].some(segment => segment === '.' || segment === '..' || /[\\\x00-\x1f]/.test(segment))) {
+    throw new HttpError(400, '文件名或目录不合法');
   }
 
   // 存储键 = sha256 + 扩展名：键与声明的哈希必须一致，否则挂进清单的名实不符
@@ -1525,77 +1569,64 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
     throw new HttpError(400, '存储键与 sha256 不一致（key 应为 <前2位>/<sha256>.<ext>）');
   }
 
-  // once 口令的秒传加一道归属校验：内容必须已在口令可用的批次里挂过清单。
-  // 否则拿着公开清单里的存储键（sha 是公开的）就能把库里任何文件「引用」进自己的
-  // 批次并任意改名——秒传只该省流量，不该变成跨批次引用任意内容的通道。
-  // daily 口令本身就能把任意字节传进任意批次，秒传不扩大其权限，不加限制。
-  if (parts === 0 && auth.kind === 'once') {
-    const m = await readManifestFile(year).catch(() => null);
-    const owned = new Set();
-    const walk = (node) => { for (const c of node.c || []) { if (c.t === 'd') walk(c); else if (c.k) owned.add(c.k); } };
-    for (const b of (m && m.batches) || []) if (auth.rec.batches.includes(b.name)) walk(b.tree);
-    if (!owned.has(key)) throw new HttpError(409, '秒传受限：该内容不在你可用批次的清单里，请按分片上传');
-  }
-
   const final = objPath(key);
-  await fsp.mkdir(path.dirname(final), { recursive: true });
-
-  let got = expect;
-  if (parts === 0) {
-    // 秒传：客户端探测到内容已在库，跳过分片直接挂清单。
-    // 内容寻址的键即哈希，对象存在就等于内容匹配；不存在则让客户端走分片上传。
-    const existing = await fsp.stat(final).catch(() => null);
-    if (!existing || !existing.isFile()) {
-      throw new HttpError(409, '秒传失败：该内容还不在库里，请按分片上传');
-    }
-  } else {
-    const dir = path.join(TMP, key.replace('/', '_'));
-    const pieces = [];
-    for (let i = 0; i < parts; i++) {
-      const p = path.join(dir, `${i}.part`);
-      const st = await fsp.stat(p).catch(() => null);
-      if (!st) throw new HttpError(409, `缺第 ${i} 片，请重传`);
-      pieces.push(p);
-    }
-
-    // 边合并边算哈希：整个文件不进内存
-    const tmpOut = `${final}.${process.pid}.tmp`;
-    const out = fs.createWriteStream(tmpOut);
-    const hash = createHash('sha256');
-    for (const p of pieces) {
-      await new Promise((resolve, reject) => {
-        const r = fs.createReadStream(p);
-        r.on('data', (c) => hash.update(c));
-        r.on('error', reject);
-        r.on('end', resolve);
-        r.pipe(out, { end: false });
+  const dir = uploadDirectory(year, key, auth, body.uploadId);
+  // 合并文件与对象同目录，发布时可原子移动。
+  const tmpOut = parts > 0 ? `${final}.${crypto.randomUUID()}.tmp` : null;
+  try {
+    // 大文件合并在队列之外，服务端校验并使用实际字节数。
+    if (tmpOut) await fsp.mkdir(path.dirname(tmpOut), { recursive: true });
+    const mergedSize = tmpOut ? await mergeParts(dir, parts, tmpOut, expect) : null;
+    const result = await writeLibrary(async () => {
+      let tokens, rec;
+      const manifest = await readManifestFile(year).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
       });
-    }
-    await new Promise((r) => out.end(r));
-    got = hash.digest('hex');
-    if (got !== expect) {
-      await fsp.rm(tmpOut, { force: true });
-      throw new HttpError(422, '内容校验失败：合并后的 sha256 与上传前不一致');
-    }
-    await fsp.rename(tmpOut, final);
-    await fsp.rm(dir, { recursive: true, force: true });
-    invalidateObjectKeys(); // 新对象入盘，秒传探测缓存别再报「不存在」
-  }
+      if (auth.kind === 'once') {
+        tokens = await loadCTokens();
+        rec = tokens.find(row => row.id === auth.rec.id && row.token === auth.rec.token);
+        if (!rec) throw new HttpError(403, '口令已被吊销');
+        checkTokenAvailability(rec);
+        const allowed = rec.batchYear || [];
+        const batches = (manifest?.batches || []).filter(b => allowed.some(scope => scope.year === year && scope.name === b.name));
+        if (!batches.some(b => b.name === folder[0])) throw new HttpError(403, '该口令不适用于目标届别或批次');
+        if (!tmpOut && !batches.some(b => treeHasKey(b.tree, key))) {
+          throw new HttpError(409, '秒传受限：该内容不在你可用批次的清单里，请按分片上传', 'quick_upload_failed');
+        }
+      }
+      const existing = await fsp.stat(final).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!tmpOut && !existing?.isFile()) throw new HttpError(409, '秒传失败：该内容还不在库里，请按分片上传', 'quick_upload_failed');
+      const size = mergedSize ?? existing.size;
+      if (tmpOut && !existing?.isFile()) {
+        await fsp.rename(tmpOut, final);
+        invalidateObjectKeys();
+      }
+      if (!manifest || !folder.length) return { key, sha256: expect, size, attached: false };
 
-  // 把文件挂到清单里：folder 是批次目录（如 "A1福州一检（2025.8）…"），name 是文件名
-  const attached = await attachToManifest(year, key, { ...body, sha256: got }, actorOf(req));
-  // 写完清单再清缓存：之前放在 attach 之前，并发请求会把旧清单重新填进 30 秒缓存，
-  // 首页「已入库」的绿点会跟着延迟半分钟
-  manifestCache.delete(year);
-  // once 顾客口令：入库成功才计一次
-  if (auth.kind === 'once') {
-    const list = await loadCTokens();
-    const rec = list.find((r) => r.id === auth.rec.id);
-    if (rec) { rec.uses = (rec.uses || 0) + 1; await saveCTokens(list); }
+      const next = rec ? tokens.map(row => row === rec ? { ...rec, uses: (rec.uses || 0) + 1 } : row) : null;
+      if (next) await saveCTokens(next);
+      try {
+        await attachToManifest(year, manifest, key, { folder, name, size, sha256: expect }, actorOf(req));
+      } catch (error) {
+        if (next) await saveCTokens(tokens);
+        throw error;
+      }
+      return { key, sha256: expect, size, attached: true };
+    });
+    if (tmpOut && body.uploadId) await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    json(res, 200, result);
+  } finally {
+    if (tmpOut) await fsp.rm(tmpOut, { force: true }).catch(() => {});
   }
-
-  json(res, 200, { key, sha256: got, size: body.size || null, attached });
 });
+
+function treeHasKey(node, key) {
+  return (node.c || []).some(child => child.t === 'd' ? treeHasKey(child, key) : child.k === key);
+}
 
 async function readBody(req, limit) {
   const chunks = [];
@@ -1623,65 +1654,46 @@ const t2TypeOf = (batchName) => {
   }
   return '考试';
 };
+const sortNames = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
+const sortChildren = (a, b) => a.t === b.t ? a.n.localeCompare(b.n, 'zh-Hans-CN', { numeric: true }) : a.t === 'd' ? -1 : 1;
+function newBatch(name) {
+  return {
+    name, stage: t2StageOf(name), type: t2TypeOf(name),
+    date: (/(\d{4}[.\-年]\d{1,2})/.exec(name) || [, ''])[1],
+    files: 0, dirs: 0, bytes: 0, subj: [],
+    tree: { n: name, t: 'd', c: [] },
+  };
+}
 
-async function attachToManifest(year, key, body, actor = '') {
+async function attachToManifest(year, m, key, body, actor = '') {
   const file = path.join(cfg.data, `${year}.json`);
-  const raw = await fsp.readFile(file, 'utf8').catch(() => null);
-  if (!raw) return false;
-  const m = JSON.parse(raw);
-  const folder = String(body.folder || '').replace(/^\/+|\/+$/g, '');
-  const name = String(body.name || '').split(/[\\/]/).pop();
-  if (!name) return false;
+  const { folder: segs, name, size } = body;
   const ext = (/\.([a-z0-9]{1,8})$/i.exec(name) || [, ''])[1].toLowerCase();
-  const size = Number(body.size) || 0;
-
-  const segs = folder ? folder.split('/') : [];
-  let parent = null;
-  let batch = null;
-  if (!segs.length) {
-    // folder 为空说明没指定批次：对象字节已入库，但清单无处可挂。
-    // 如实返回 false —— 旧实现把文件挂到一个「合成父节点」（不落在任何 batch.tree 上），
-    // 写盘后文件静默丢失却仍报 attached:true。
-    return false;
-  } else {
-    // 批次不存在就现场建一个（元数据从名字推导，规则同 build-tree2-index）
-    batch = (m.batches || []).find((b) => b.name === segs[0]);
-    if (!batch) {
-      const bn = segs[0];
-      batch = {
-        name: bn,
-        stage: t2StageOf(bn),
-        type: t2TypeOf(bn),
-        date: (/(\d{4}[.\-年]\d{1,2})/.exec(bn) || [, ''])[1],
-        files: 0,
-        dirs: 0,
-        bytes: 0,
-        subj: [],
-        tree: { n: bn, t: 'd', c: [] },
-      };
-      m.batches.push(batch);
-      m.batches.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }));
-      batch = m.batches.find((b) => b.name === bn); // 排序后重新拿到同一个对象
-    }
-    parent = batch.tree;
-    // 中间子目录不存在就一路建（例如 批次/听力）
-    for (const s of segs.slice(1)) {
-      let sub = (parent.c || []).find((c) => c.t === 'd' && c.n === s);
-      if (!sub) {
-        sub = { n: s, t: 'd', c: [] };
-        parent.c.push(sub);
-        parent.c.sort((a, b) => (a.t === b.t ? a.n.localeCompare(b.n, 'zh-Hans-CN', { numeric: true }) : a.t === 'd' ? -1 : 1));
-      }
-      parent = sub;
-    }
+  m.batches ||= [];
+  let batch = m.batches.find(b => b.name === segs[0]);
+  if (!batch) {
+    batch = newBatch(segs[0]);
+    m.batches.push(batch);
+    m.batches.sort(sortNames);
   }
-  const sortC = (a, b) => (a.t === b.t ? a.n.localeCompare(b.n, 'zh-Hans-CN', { numeric: true }) : a.t === 'd' ? -1 : 1);
+  let parent = batch.tree;
+  for (const segment of segs.slice(1)) {
+    let sub = (parent.c || []).find(c => c.t === 'd' && c.n === segment);
+    if (!sub) {
+      sub = { n: segment, t: 'd', c: [] };
+      (parent.c ||= []).push(sub);
+      parent.c.sort(sortChildren);
+    }
+    parent = sub;
+  }
+  parent.c ||= [];
   const existing = (parent.c || []).find((c) => c.t === 'f' && c.n === name);
-  if (existing) Object.assign(existing, { s: size || existing.s, h: body.sha256, k: key, e: `.${ext}` });
+  const attributes = { s: size, h: body.sha256, k: key, e: ext ? `.${ext}` : '' };
+  if (existing) Object.assign(existing, attributes);
   else {
     // w（首次入库日期）与 build-tree2-index 同格式：首页「最近 7 天新增」和排序都靠它
-    parent.c.push({ n: name, t: 'f', s: size, h: body.sha256, k: key, e: `.${ext}`, w: new Date().toISOString().slice(0, 10) });
-    parent.c.sort(sortC);
+    parent.c.push({ n: name, t: 'f', ...attributes, w: new Date().toISOString().slice(0, 10) });
+    parent.c.sort(sortChildren);
   }
   if (batch) batch.subj = [...new Set([...(batch.subj || []), ...T2_SUBJECTS.filter((s) => name.includes(s))])];
 
@@ -1689,14 +1701,12 @@ async function attachToManifest(year, key, body, actor = '') {
   recalcManifestStats(m);
   m.totals.uniqueFiles = null;
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(m, null, 2));
-  await fsp.rename(tmp, file);
+  await writeJsonAtomic(file, m);
+  manifestCache.delete(year);
 
   // 记录「本机上传」来源（区别于 pan-sync 从本地盘发布的那批），
   // 本地的 tree2-publish 每次发布会把这些采纳回本地清单，避免被重建覆盖
-  await logUpload(year, key, body, body.sha256, actor);
-  return true;
+  await appendUplog({ season: year, key, name, folder: segs.join('/'), sha256: body.sha256, actor, at: new Date().toISOString() });
 }
 
 const UPLOG_FILE = path.join(SHARES_DIR, 'uplog.json');
@@ -1711,25 +1721,10 @@ async function appendUplog(entry) {
     } catch { /* 首条 */ }
     list.push(entry);
     if (list.length > 1000) list = list.slice(-1000);
-    const tmp = `${UPLOG_FILE}.${process.pid}.tmp`;
-    await fsp.writeFile(tmp, JSON.stringify(list, null, 1));
-    await fsp.rename(tmp, UPLOG_FILE);
-  } catch {
-    /* 事件日志失败不影响主流程 */
+    await writeJsonAtomic(UPLOG_FILE, list, 1);
+  } catch (error) {
+    console.error('[tree2] 写入上传日志失败', error);
   }
-}
-
-async function logUpload(year, key, body, sha, actor = '') {
-  // 与改名/删除共用同一条 uplog 追加通道（原先是 appendUplog 的复制版，条数上限还不一致）
-  await appendUplog({
-    season: year,
-    key,
-    name: body.name || '',
-    folder: String(body.folder || ''),
-    sha256: sha,
-    actor,
-    at: new Date().toISOString(),
-  });
 }
 
 // ---------------- 顾客上传口令（admin 在 admin.html 生成，同学在 customer.html 使用） ----------------
@@ -1745,7 +1740,8 @@ async function loadCTokens() {
       ctCache.list = JSON.parse(await fsp.readFile(CTOKENS_FILE, 'utf8'));
       ctCache.m = st.mtimeMs;
     }
-  } catch {
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
     ctCache.list = [];
     ctCache.m = -1;
   }
@@ -1753,10 +1749,44 @@ async function loadCTokens() {
 }
 
 async function saveCTokens(list) {
-  const tmp = CTOKENS_FILE + '.' + process.pid + '.tmp';
-  await fsp.writeFile(tmp, JSON.stringify(list, null, 1));
-  await fsp.rename(tmp, CTOKENS_FILE);
-  ctCache.m = -1; // 强制下次重读
+  await fsp.mkdir(SHARES_DIR, { recursive: true });
+  await writeJsonAtomic(CTOKENS_FILE, list, 1);
+  ctCache.m = -1;
+}
+
+function optionalPositiveInteger(value, max, label) {
+  if (value == null || value === '') return null;
+  const number = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  if (!Number.isInteger(number) || number < 1 || number > max) throw new HttpError(400, `${label}须在 1–${max} 之间`);
+  return number;
+}
+
+async function listTokenBatches() {
+  const files = await fsp.readdir(cfg.data).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const years = files.filter(file => /^\d{4}\.json$/.test(file)).map(file => file.slice(0, 4));
+  return (await Promise.all(years.map(async year => (await readManifestFile(year)).batches?.map(b => ({ name: b.name, year })) || []))).flat();
+}
+
+async function bindLegacyTokens() {
+  const list = await loadCTokens();
+  if (!list.some(rec => !Array.isArray(rec.batchYear))) return;
+  const available = await listTokenBatches();
+  await saveCTokens(list.map(rec => {
+    if (Array.isArray(rec.batchYear)) return rec;
+    const batchYear = (rec.batches || []).flatMap(name => {
+      const matches = available.filter(batch => batch.name === name);
+      return matches.length === 1 ? matches : [];
+    });
+    return { ...rec, batchYear };
+  }));
+}
+
+function checkTokenAvailability(rec) {
+  if (rec.expiresAt && Date.now() >= rec.expiresAt) throw new HttpError(403, '该口令已过有效期');
+  if (rec.maxUses && (rec.uses || 0) >= rec.maxUses) throw new HttpError(403, '该口令的可用次数已用完');
 }
 
 function todayCN() {
@@ -1778,8 +1808,7 @@ async function classifyWrite(req) {
   const list = await loadCTokens();
   const rec = list.find((r) => r.token === t);
   if (!rec) throw new HttpError(401, '口令不正确或已失效');
-  if (rec.expiresAt && Date.now() > rec.expiresAt) throw new HttpError(403, '该口令已过有效期');
-  if (rec.maxUses && (rec.uses || 0) >= rec.maxUses) throw new HttpError(403, '该口令的可用次数已用完');
+  checkTokenAvailability(rec);
   return { kind: 'once', rec };
 }
 
@@ -1905,34 +1934,54 @@ async function tree2Handler(req, res) {
     const status = e.status || 500;
     if (status >= 500) console.error('[tree2]', url.pathname, e);
     if (res.headersSent) return res.end();
-    json(res, status, { error: e.message || '服务器错误' }, cors(req));
+    json(res, status, {
+      error: e instanceof HttpError ? e.message : '服务器错误',
+      ...(e instanceof HttpError && e.code ? { code: e.code } : {}),
+    }, cors(req));
   }
 }
 
 const server = http.createServer(tree2Handler);
 
 // ---------------- 分片临时目录 GC ----------------
-// 上传中断 / commit 校验失败会留下 tmp/<key>/<i>.part，没有任何清理的话永久堆积。
-// 分片超过 24 小时必然是被放弃的残骸（正常上传几分钟内就会 commit 走人）。
+// 清理一天未更新的上传会话。
 async function sweepTmpParts() {
   const dirs = await fsp.readdir(TMP).catch(() => []);
   const now = Date.now();
   for (const d of dirs) {
-    if (!/^[0-9a-f]{2}_[0-9a-f]{64}/.test(d)) continue;
+    if (!/^(?:[0-9a-f]{64}|[0-9a-f]{2}_[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/.test(d)) continue;
     const p = path.join(TMP, d);
     const s = await fsp.stat(p).catch(() => null);
-    if (s && s.isDirectory() && now - s.mtimeMs > 24 * 3600 * 1000) {
+    if (s && now - s.mtimeMs > 24 * 3600 * 1000) {
       await fsp.rm(p, { recursive: true, force: true }).catch(() => {});
     }
   }
 }
-setInterval(sweepTmpParts, 6 * 3600 * 1000).unref(); // 每 6 小时扫一遍；进程存活由 server 监听兜底，定时器不必拽住事件循环
+
+async function sweepMergedFiles() {
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  for (const prefix of await fsp.readdir(OBJECTS).catch(() => [])) {
+    if (!/^[0-9a-f]{2}$/.test(prefix)) continue;
+    const directory = path.join(OBJECTS, prefix);
+    for (const name of await fsp.readdir(directory).catch(() => [])) {
+      if (!/^[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?\.(?:\d+|[0-9a-f-]{36})\.tmp$/.test(name)) continue;
+      const file = path.join(directory, name);
+      const stat = await fsp.lstat(file).catch(() => null);
+      if (stat?.isFile() && stat.mtimeMs < cutoff) await fsp.unlink(file).catch(() => {});
+    }
+  }
+}
+const sweepUploads = () => Promise.all([sweepTmpParts(), sweepMergedFiles()]);
+setInterval(sweepUploads, 6 * 3600 * 1000).unref();
 
 await fsp.mkdir(OBJECTS, { recursive: true });
 await fsp.mkdir(TMP, { recursive: true });
-sweepTmpParts(); // 启动时先扫一次，清掉停机期间留下的残骸
+await bindLegacyTokens().catch(error => {
+  console.error('[tree2] 无法为旧口令补齐届别，旧授权暂停使用', error);
+});
+sweepUploads();
 server.listen(cfg.port, cfg.host, () => {
-  const addr = `${cfg.host}:${cfg.port}`;
+  const addr = `${cfg.host}:${server.address().port}`;
   console.log(`tree2 文件服务已启动  http://${addr}`);
   console.log(`  静态站  http://${addr}/tree2/index.html?api=http://${addr}`);
   console.log(`  存储    ${cfg.store}`);

@@ -35,6 +35,9 @@ jobs:
       - name: Syntax check
         run: node --check scripts/tree2-files-server.mjs
 
+      - name: Test uploads and guest access
+        run: node --test test/tree2-upload.test.mjs
+
       - name: Configure SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -64,6 +67,7 @@ jobs:
             --exclude='.git' --exclude='.github' \
             --exclude='.deployignore' --exclude='.gitignore' --exclude='.gitattributes' \
             --exclude='README.md' \
+            --exclude='/test/' \
             -e "ssh -p ${SERVER_PORT}" \
             ./ \
             "${SERVER_USER}@${SERVER_HOST}:${DEPLOY_PATH}/"

@@ -7,7 +7,7 @@
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
 import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115a';
-import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115a';
+import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115b';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -1049,6 +1049,7 @@ async function openViewer(file, parent, noPush) {
   const box = $('#viewer');
   if (!box) return;
   const ticket = ++viewerTicket;
+  const isCurrent = () => box.dataset.open === 'true' && ticket === viewerTicket;
   const titleEl = $('#v-title');
   if (titleEl) titleEl.textContent = file.n;
   const k = kindOf(file.n);
@@ -1080,14 +1081,14 @@ async function openViewer(file, parent, noPush) {
         const r = await fetch(`${apiBase()}/api/tree2/nd-share?k=${encodeURIComponent(file.k)}`, { signal: AbortSignal.timeout?.(5000) });
         if (r.ok) {
           const { id } = await r.json();
-          if (id && box.dataset.open === 'true' && ticket === viewerTicket) {
+          if (id && isCurrent()) {
             location.assign(`/music/share/${encodeURIComponent(id)}`);
             return;
           }
         }
       } catch { /* 接口慢/挂：直接走内嵌播放器，别等 */ }
     }
-    render($('#v-body'), url, file.n);
+    if (isCurrent()) void render($('#v-body'), url, file.n, { isCurrent });
     return;
   }
 
@@ -1099,14 +1100,14 @@ async function openViewer(file, parent, noPush) {
         if (bar && total) bar.style.width = `${Math.min(100, (got / total) * 100)}%`;
       },
     });
-    if (!box.dataset.open || ticket !== viewerTicket) return;
+    if (!isCurrent()) return;
     if (blob.size > MAX_BYTES) {
       $('#v-body').innerHTML = `<div class="pad">文件 ${fmtSize(blob.size)} 超过在线预览上限，请下载后查看。</div>`;
       return;
     }
-    await render($('#v-body'), blob, file.n);
+    await render($('#v-body'), blob, file.n, { isCurrent });
   } catch (e) {
-    if (ticket === viewerTicket) $('#v-body').innerHTML = `<div class="pad">加载失败：${esc(e.message)}<br><button class="t2-btn" type="button" onclick="location.href='${fileUrl(state.query.s, file, { download: true })}'">下载到本地</button></div>`;
+    if (isCurrent()) $('#v-body').innerHTML = `<div class="pad">加载失败：${esc(e.message)}<br><button class="t2-btn" type="button" onclick="location.href='${fileUrl(state.query.s, file, { download: true })}'">下载到本地</button></div>`;
   }
 }
 const MAX_BYTES = 80 * 1024 * 1024;
@@ -1115,6 +1116,7 @@ function closeViewer() {
   const box = $('#viewer');
   if (!box || box.dataset.open !== 'true') return; // 幂等：popstate 与手动关闭只走一次
   box.dataset.open = 'false';
+  viewerTicket++;
   document.body.style.overflow = '';
   disposePdf(); // 抽屉关了，PDF 的文档和监听器一并释放
   $('#v-body').innerHTML = '';
