@@ -1264,7 +1264,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     for (const k of removedKeys) {
       const sha = path.basename(k, path.extname(k));
       if (!sha || refs.includes(sha)) continue;
-      try { await fsp.unlink(objPath(k)); invalidateObjectKeys(); } catch { /* 本体可能本来就不在 */ }
+      try { await fsp.unlink(objPath(k)); deletedObjects.push(k); invalidateObjectKeys(); } catch { /* 本体可能本来就不在 */ }
     }
   }
   // 删除事件也要写进 uplog，和改名对称：清单是从本地目录全量重扫派生的，
@@ -1506,12 +1506,13 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   safeYear(year);
   const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}');
   const key = safeKey(body.key);
-  const parts = Number(body.parts);
   const expect = String(body.sha256 || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(expect)) throw new HttpError(400, 'sha256 不合法');
-  // parts 必须显式给出（秒传为 0）：null 和 undefined 都挡掉，否则 Number(null)===0 会被当成秒传
+  // parts 必须显式给出且是真正的整数（秒传为 0）：不做 Number 强转，
+  // 否则 Number(null)===0、Number('')===0、Number([])===0 都会被当成秒传
   if (body.parts == null) throw new HttpError(400, '缺少 parts（分片数，秒传传 0）');
-  if (!Number.isInteger(parts) || parts < 0 || parts > 4096) throw new HttpError(400, '分片数不合法');
+  if (!Number.isInteger(body.parts) || body.parts < 0 || body.parts > 4096) throw new HttpError(400, '分片数不合法');
+  const parts = body.parts;
   if (auth.kind === 'once') {
     const firstSeg = String(body.folder || '').split('/').filter(Boolean)[0] || '';
     if (!auth.rec.batches.includes(firstSeg)) {
@@ -1582,7 +1583,7 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
   }
 
   // 把文件挂到清单里：folder 是批次目录（如 "A1福州一检（2025.8）…"），name 是文件名
-  const attached = await attachToManifest(year, key, { ...body, sha256: got });
+  const attached = await attachToManifest(year, key, { ...body, sha256: got }, actorOf(req));
   // 写完清单再清缓存：之前放在 attach 之前，并发请求会把旧清单重新填进 30 秒缓存，
   // 首页「已入库」的绿点会跟着延迟半分钟
   manifestCache.delete(year);
@@ -1623,7 +1624,7 @@ const t2TypeOf = (batchName) => {
   return '考试';
 };
 
-async function attachToManifest(year, key, body) {
+async function attachToManifest(year, key, body, actor = '') {
   const file = path.join(cfg.data, `${year}.json`);
   const raw = await fsp.readFile(file, 'utf8').catch(() => null);
   if (!raw) return false;
@@ -1694,7 +1695,7 @@ async function attachToManifest(year, key, body) {
 
   // 记录「本机上传」来源（区别于 pan-sync 从本地盘发布的那批），
   // 本地的 tree2-publish 每次发布会把这些采纳回本地清单，避免被重建覆盖
-  await logUpload(year, key, body, body.sha256, actorOf(req));
+  await logUpload(year, key, body, body.sha256, actor);
   return true;
 }
 

@@ -327,13 +327,18 @@ export function disposePdf() {
 async function pdf(box, blob, note) {
   disposePdf(); // 换着看 PDF/其它文件时，上一个文档的内存和监听器都还在
   const seq = pdfSeq;
+  // 渲染期间又开了别的文件（seq 已变）：本次渲染的产物已被丢弃，
+  // 不能再写 DOM、更不能让已取得的文档（几十 MB 的 ArrayBuffer）无人回收。
+  const stale = () => seq !== pdfSeq;
   await script(`${V}/pdfjs-3.11.174/pdf.min.js`);
+  if (stale()) return;
   const lib = window.pdfjsLib;
   if (!lib) throw new Error('pdf.js 没有正确加载');
   const workerSrc = new URL(`${V}/pdfjs-3.11.174/pdf.worker.min.js`, location.href).href;
   lib.GlobalWorkerOptions.workerSrc = workerSrc;
 
   const data = await blob.arrayBuffer();
+  if (stale()) return;
   const base = {
     data,
     cMapUrl: new URL(`${V}/pdfjs-3.11.174/cmaps/`, location.href).href,
@@ -344,6 +349,7 @@ async function pdf(box, blob, note) {
   if (workerBroken) {
     lib.GlobalWorkerOptions.workerSrc = '';
     doc = await lib.getDocument({ ...base, disableWorker: true }).promise;
+    if (stale()) { try { doc.destroy(); } catch { /* 已销毁 */ } return; }
   } else {
     try {
       doc = await lib.getDocument(base).promise;
@@ -354,6 +360,7 @@ async function pdf(box, blob, note) {
       doc = await lib.getDocument({ ...base, disableWorker: true }).promise;
     }
   }
+  if (stale()) { try { doc.destroy(); } catch { /* 已销毁 */ } return; }
 
   box.innerHTML = '';
   const view = document.createElement('div');
@@ -379,9 +386,10 @@ async function pdf(box, blob, note) {
 
   let io = null;
   const drawPage = async (holder) => {
-    if (holder.dataset.done) return;
+    if (holder.dataset.done || stale()) return;
     holder.dataset.done = '1';
     const page = await doc.getPage(Number(holder.dataset.n));
+    if (stale()) return; // 文档已被新预览销毁/接管，别再往脱离 DOM 的容器上画
     const b = page.getViewport({ scale: 1 });
     // 至少 2 倍、最多 3 倍：有些内嵌浏览器把 devicePixelRatio 报成 1，
     // 只按 1 倍画的话在 3 倍屏上会被放大到糊成一片。

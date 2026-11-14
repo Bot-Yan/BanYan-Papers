@@ -112,7 +112,7 @@ jobs:
             author:short(commit?.author?.name || commit?.author?.username,120),
             actor:short(run.triggering_actor?.login || run.actor?.login,120),
             started_at:new Date(start).toISOString(),
-            finished_at:new Date(finish > start ? finish : Math.max(start,Date.parse(run.updated_at))).toISOString(),
+            finished_at:new Date(finish > start ? finish : Math.max(start,Date.parse(run.updated_at) || start)).toISOString(),
             status:run.conclusion === 'success' || run.conclusion === 'cancelled' ? run.conclusion : 'failure',
             failure:short([details.join('；') || fallback[run.conclusion],reason].filter(Boolean).join(' · '),300),
           };
@@ -130,7 +130,7 @@ jobs:
             } catch {
               console.warn('Deployment notification endpoint could not be reached.');
             }
-            if (status === 202) { console.log('Deployment result accepted.'); break; }
+            if (status >= 200 && status < 300) { console.log('Deployment result accepted.'); break; }
             if (status < 500 && status !== 429 || index === 4) throw new Error('Deployment notification rejected (HTTP '+status+').');
             await delay(5000 * (index+1));
           }
