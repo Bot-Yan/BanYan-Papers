@@ -31,6 +31,12 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 `deletedObjects`。仍被引用的对象保留（内容寻址去重，可能被别的
 条目/分享使用）。
 
+## 目录整理与离线重扫
+
+`POST /api/tree2/arrange` 使用同一组参数预览及执行。请求带 `year`、`action`、`source` 路径数组，以及操作所需的 `name` 或 `kind`、`destination`。预览返回 `revision`、移动文件数和冲突摘要。执行时带回 `revision`，服务会在写入前重新校验。
+
+成功操作写进 `uplog.json`，事件类型为 `arrange`，保留 `season`、`action` 和原始路径参数。离线重扫工具需要按日志顺序把同样的目录操作应用到本地源树，再重新生成清单。发布前请验证重扫后仍保留这些改动；本仓库的部署工作流会保护当前运行时清单。
+
 ## 本地开发
 
 ```bash

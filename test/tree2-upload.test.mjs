@@ -76,6 +76,7 @@ test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   t.after(async () => { await stop(); await rm(root, { recursive: true, force: true }); });
   await Promise.all([mkdir(data), mkdir(shares), mkdir(serverDir)]);
   await copyFile(script, fixtureScript);
+  await copyFile(new URL('../scripts/tree2-arrange.mjs', import.meta.url), join(serverDir, 'tree2-arrange.mjs'));
   await writeFile(faultInjection, `
 import fs from 'node:fs';
 import { Writable } from 'node:stream';
@@ -238,5 +239,53 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
       upstream.closeAllConnections();
       await new Promise(resolve => upstream.close(resolve));
     }
+  });
+
+  await t.test('directory preview blocks conflicts and rejects stale confirmations', async () => {
+    const year = '2028';
+    const entry = name => ({ t: 'f', n: name, k: file.key, s: file.bytes.length });
+    const folder = (n, c) => ({ t: 'd', n, c });
+    await writeFile(join(data, year + '.json'), JSON.stringify({ batches: [
+      { name: '整理', tree: folder('整理', [
+        entry('Keep.txt'),
+        folder('外层', [folder('内层', [entry('A.txt')])]),
+        folder('卷子', [entry('B.txt'), folder('科目', [entry('C.txt')])]),
+        folder('冲突目录', [entry('KEEP.txt')]),
+      ]) },
+      batch('另一个批次'),
+    ] }));
+    const arrange = (body, token) => api('arrange', { method: 'POST', token, body: { year, ...body } });
+    const previewAndApply = async (operation, counters = {}) => {
+      const preview = await arrange(operation);
+      assert.equal(preview.status, 200);
+      for (const [key, value] of Object.entries(counters)) assert.deepEqual(preview.body[key], value);
+      const result = await arrange({ ...operation, revision: preview.body.revision });
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+    };
+    const conflict = { action: 'dissolve', source: ['整理', '冲突目录'] };
+    const before = await readManifest(year);
+    const preview = await arrange(conflict);
+    assert.deepEqual(preview.body.conflicts, ['KEEP.txt']);
+    assert.equal((await arrange({ ...conflict, revision: preview.body.revision })).status, 409);
+    assert.deepEqual(await readManifest(year), before);
+    const move = { action: 'move', kind: 'd', source: ['整理', '外层'], destination: ['整理', '卷子'] };
+    assert.equal((await arrange({ ...move, destination: ['另一个批次'] })).status, 400);
+    assert.equal((await arrange({ ...move, destination: ['整理', '外层', '内层'] })).status, 400);
+    assert.equal((await arrange(move, 'guest')).status, 401);
+    const stale = await arrange(move);
+    await previewAndApply({ action: 'mkdir', source: ['整理'], name: '归档' });
+    assert.equal((await arrange({ ...move, revision: stale.body.revision })).status, 409);
+    await previewAndApply({ action: 'dissolve', source: ['整理', '外层'] }, { movedEntries: 1, movedFiles: 1, foldersRemoved: 1 });
+    await previewAndApply({ ...move, source: ['整理', '内层'], destination: ['整理', '归档'] }, { movedFiles: 1 });
+    await previewAndApply({ action: 'flatten', source: ['整理', '卷子'] }, { movedFiles: 1, foldersRemoved: 1 });
+    const manifest = await readManifest(year);
+    const root = manifest.batches[0].tree.c;
+    assert.deepEqual(root.find(row => row.n === '卷子').c.map(row => row.n), ['B.txt', 'C.txt']);
+    assert.equal(root.find(row => row.n === '归档').c[0].c[0].k, file.key);
+    assert.equal(manifest.totals.files, 5);
+    assert.equal(manifest.totals.bytes, 5 * file.bytes.length);
+    const uplog = JSON.parse(await readFile(join(shares, 'uplog.json'), 'utf8'));
+    assert.deepEqual(uplog.filter(row => row.type === 'arrange').map(row => row.action), ['mkdir', 'dissolve', 'move', 'flatten']);
   });
 });

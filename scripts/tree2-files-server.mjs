@@ -44,6 +44,7 @@ import process from 'node:process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { ArrangeError, planArrangement } from './tree2-arrange.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -1381,6 +1382,45 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
     await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, actor: actorOf(req), at: new Date().toISOString() });
     json(res, 200, { ok: true, kind: renamed, newName });
   });
+});
+
+// ---------------- 批次内目录整理 ----------------
+route('POST', /^\/api\/tree2\/arrange$/, async (req, res) => {
+  requireWrite(req);
+  let body;
+  try { body = JSON.parse(await readBody(req, 16 * 1024)); }
+  catch (error) { if (error instanceof SyntaxError) throw new HttpError(400, '目录操作请求格式不合法'); throw error; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, '目录操作请求格式不合法');
+  const year = safeYear(body.year);
+  const { action, source, destination, name, kind, revision } = body;
+  if (revision !== undefined && (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision))) {
+    throw new HttpError(400, '请先预览目录操作');
+  }
+  const operation = { action, source, destination, name, kind };
+  const run = async () => {
+    const manifest = await readManifestFile(year).catch(error => {
+      if (error.code === 'ENOENT') throw new HttpError(404, '清单不存在');
+      throw error;
+    });
+    let plan;
+    try {
+      plan = planArrangement(manifest, operation);
+      if (revision !== undefined) {
+        if (revision !== plan.summary.revision) throw new HttpError(409, '清单已更新，请重新预览');
+        plan.apply();
+      }
+    } catch (error) {
+      if (error instanceof ArrangeError) throw new HttpError(error.status, error.message);
+      throw error;
+    }
+    if (revision === undefined) return json(res, 200, plan.summary);
+    recalcManifestStats(manifest);
+    await writeJsonAtomic(path.join(cfg.data, `${year}.json`), manifest);
+    manifestCache.delete(year);
+    await appendUplog({ type: 'arrange', season: year, ...operation, actor: actorOf(req), at: new Date().toISOString() });
+    json(res, 200, { ok: true, ...plan.summary });
+  };
+  return revision === undefined ? run() : writeLibrary(run);
 });
 
 // ---------------- 预建空批次（admin：先建批次再发顾客口令） ----------------
