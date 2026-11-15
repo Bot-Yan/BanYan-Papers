@@ -48,7 +48,7 @@
 
     <label for="token">上传口令（TREE2_TOKEN，保存在本浏览器）</label>
     <input type="password" id="token" autocomplete="off" placeholder="必填">
-    <p id="gate-hint" style="margin:10px 0 0;color:#8a7f6e;font-size:13px">🔒 输入正确口令后显示管理内容</p>
+    <p id="gate-hint" role="status" style="margin:10px 0 0;color:#8a7f6e;font-size:13px">请输入管理员上传口令</p>
 
     <div class="row t2-gated" hidden>
       <div>
@@ -129,8 +129,9 @@
 <script>
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var PART = window.tree2Upload.partSize;
   var LS_TOKEN = 'tree2.token';
+  var tokenInput = $('token');
+  try { tokenInput.value = localStorage.getItem(LS_TOKEN) || ''; } catch { /* 浏览器可能禁用了本地存储 */ }
 
   // 全角字母/数字/符号 → 半角（中文输入法状态下打的口令会带全角字符，肉眼难辨）
   function normToken(v) {
@@ -139,7 +140,7 @@
       .replace(/\u3000/g, ' ')
       .trim();
   }
-  function token() { return normToken($('token').value || localStorage.getItem(LS_TOKEN) || ''); }
+  function token() { return normToken(tokenInput.value); }
 
   // 口令门：没口令/口令不对时，口令框以下的管理内容全部隐藏
   function applyGate(ok, msg) {
@@ -147,24 +148,53 @@
     var h = document.getElementById('gate-hint');
     if (h) { h.hidden = !!ok; if (!ok && msg) h.textContent = msg; }
   }
-  function verifyToken(v) {
-    if (!v) { applyGate(false); return; }
-    fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': v } })
-      .then(function (r) { applyGate(r.ok, r.ok ? '' : '口令不对：检查是否复制完整'); if (r.ok) loadCtokCard(); })
-      .catch(function () { applyGate(false); });
+  var validation = 0;
+  async function verifyToken() {
+    var run = ++validation;
+    var v = token();
+    if (!v) {
+      applyGate(false, '请输入管理员上传口令');
+      return;
+    }
+    applyGate(false, '正在验证管理员口令…');
+    try {
+      var response = await fetch('/api/tree2/stats', {
+        headers: { 'X-Tree2-Token': v },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(10000),
+      });
+      if (run !== validation) return;
+      if (response.status === 401 || response.status === 403) {
+        applyGate(false, '管理员口令未通过。请确认使用的是 TREE2_TOKEN，顾客上传口令仅用于顾客页。');
+        return;
+      }
+      if (!response.ok || !response.headers.get('Content-Type')?.includes('application/json')) {
+        applyGate(false, '暂时无法验证口令（HTTP ' + response.status + '），请稍后重试。');
+        return;
+      }
+      applyGate(true);
+      loadCtokCard();
+      loadStats();
+    } catch {
+      if (run === validation) applyGate(false, '无法连接资料库验证口令，请检查网络后重试。');
+    }
   }
 
-  // 口令框变化 → 保存 + 重拉排行（500ms 防抖）
-  var statsTimer = null;
-  $('token').addEventListener('input', function () {
-    var v = normToken(this.value);
-    clearTimeout(statsTimer);
-    statsTimer = setTimeout(function () {
+  function saveTokenAndVerify() {
+    var v = token();
+    try {
       if (v) localStorage.setItem(LS_TOKEN, v);
       else localStorage.removeItem(LS_TOKEN);
-      verifyToken(v);
-      loadStats();
-    }, 500);
+    } catch { /* 当前页面仍可使用已输入的口令 */ }
+    void verifyToken();
+  }
+
+  var statsTimer = null;
+  tokenInput.addEventListener('input', function () {
+    validation++;
+    clearTimeout(statsTimer);
+    applyGate(false, token() ? '等待验证管理员口令…' : '请输入管理员上传口令');
+    statsTimer = setTimeout(saveTokenAndVerify, 500);
   });
   // ---- 顾客上传口令（admin 发放） ----
   function esc2(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -286,15 +316,12 @@
       loadCtokCard();
     });
   });
-  verifyToken(token()); // 打开页面先验一次（记住的口令直接解锁）
-  document.getElementById('token').addEventListener('keydown', function (e) {
+  void verifyToken();
+  tokenInput.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
     e.preventDefault();
-    var v = normToken(this.value);
     clearTimeout(statsTimer);
-    localStorage.setItem(LS_TOKEN, v);
-    verifyToken(v);
-    loadStats();
+    saveTokenAndVerify();
   });
 
   // ＋新建批次：展开/收起新批次名输入框（folder() 按 newbatch 可见性决定取哪个值）
@@ -368,6 +395,10 @@
   var statsTimerOK = true;
   $('go').addEventListener('click', function () {
     if (!token()) { alert('先填上传口令'); return; }
+    if (!window.tree2Upload || !window.hashwasm?.createSHA256) {
+      alert('上传组件加载失败，请刷新页面后重试。');
+      return;
+    }
     var input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
@@ -434,9 +465,10 @@
         setRow(li, 'run', '秒传：正在入库…', 1);
         if (await commit(0)) return;
       }
-      var count = Math.max(1, Math.ceil(file.size / PART));
+      var partSize = window.tree2Upload.partSize;
+      var count = Math.max(1, Math.ceil(file.size / partSize));
       for (var i = 0; i < count; i++) {
-        await putPart(target, key, i, count, file.slice(i * PART, (i + 1) * PART));
+        await putPart(target, key, i, count, file.slice(i * partSize, (i + 1) * partSize));
         setRow(li, 'run', '上传分片 ' + (i + 1) + '/' + count, 0.15 + 0.85 * ((i + 1) / count));
       }
       setRow(li, 'run', '合并校验…', 1);
@@ -469,8 +501,6 @@
   });
   $('year').addEventListener('change', function () { loadYear(this.value); });
 
-  // ---- 热门资料排行（loadStats 定义在上方脚本块里；页面打开时先拉一次） ----
-  loadStats();
 </script>
 <script>
   (function () {
@@ -481,7 +511,7 @@
     var dListBtn = document.getElementById('del-list');
     var dBatchBtn = document.getElementById('del-batch-btn');
 
-    function t() { return (localStorage.getItem('tree2.token') || '').trim(); }
+    function t() { return token(); }
     // 与上传区的 normToken 同款：全角字母数字转半角、去首尾空格
     function normToken(v) {
       return String(v || '')
