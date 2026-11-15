@@ -10,6 +10,8 @@
   --card: #ffffff;
   --ink: #1e3a5f;
   --ink-2: #33506f;
+  /* 压在 --ink 色块（选中的届别/类型/按钮）上面的文字色：暗色模式下 --ink 变亮，这个随之变深 */
+  --ink-contrast: #fff;
   --line: #d9cdb5;
   --line-soft: #ece1ca;
   --sub: #8a7f6e;
@@ -61,21 +63,38 @@ button { font: inherit; color: inherit; }
 
 .t2-seasons { display: flex; align-items: center; gap: 4px; padding: 3px; background: var(--paper-2); border-radius: 999px; }
 .t2-season { padding: 5px 12px; border: 0; background: none; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--ink-2); }
-.t2-season[aria-current="true"] { background: var(--ink); color: #fff; }
+.t2-season[aria-current="true"] { background: var(--ink); color: var(--ink-contrast); }
 .t2-season:disabled { opacity: .38; cursor: not-allowed; }
 
-.t2-search { position: relative; flex: 1; min-width: 140px; max-width: 460px; margin-left: auto; }
+.t2-search {
+  position: relative; flex: 1; min-width: 140px; max-width: 460px; margin-left: auto;
+  /* 圆角裁剪交给父级：主题切换时输入框的背景色过渡会被 Chromium 提升成合成层，
+     自身的 border-radius 裁剪瞬间失效、露出方角；父级 overflow:hidden 不受影响 */
+  border-radius: 999px; overflow: hidden;
+  transition: box-shadow .2s ease;
+}
+/* 焦点光圈挪到 form 上画：input 的 shadow 会被上面的 overflow:hidden 裁掉 */
 .t2-search input {
+  display: block; /* 块级：去掉行内布局的上下留白，焦点光圈才能紧贴搜索框 */
   width: 100%; height: 36px; padding: 0 68px 0 34px;
   border: 1px solid var(--line); border-radius: 999px; background: #fff;
   font: inherit; color: var(--ink); outline: none;
+  transition: border-color .2s ease, box-shadow .2s ease, background-color .2s ease;
 }
-.t2-search input:focus { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(30, 58, 95, .12); }
-.t2-search .t2-search-ico { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--sub); pointer-events: none; }
+.t2-search input:hover { border-color: var(--ink-2); }
+.t2-search input:focus { border-color: var(--ink); }
+.t2-search .t2-search-btn {
+  position: absolute; left: 7px; top: 50%; translate: 0 -50%;
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: 999px;
+  display: grid; place-items: center; background: none; color: var(--sub); cursor: pointer;
+}
+.t2-search .t2-search-btn:hover { color: var(--ink); background: rgba(30, 58, 95, .08); }
+html[data-theme="dark"] .t2-search .t2-search-btn:hover { background: rgba(255, 255, 255, .09); color: var(--ink); }
+.t2-search .t2-search-btn svg { width: 14px; height: 14px; }
 .t2-search kbd {
   position: absolute; right: 10px; top: 50%; translate: 0 -50%;
   padding: 1px 6px; border: 1px solid var(--line-soft); border-bottom-width: 2px; border-radius: 5px;
-  font: 600 10px/16px var(--mono); color: var(--sub); background: var(--paper);
+  font: 600 10px/16px var(--mono); color: var(--sub); background: var(--paper-2);
 }
 
 .t2-iconbtn {
@@ -83,13 +102,44 @@ button { font: inherit; color: inherit; }
   border: 1px solid var(--line-soft); border-radius: 10px; background: #fff; cursor: pointer;
 }
 .t2-iconbtn:hover { border-color: var(--line); background: var(--paper-2); }
-.t2-iconbtn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+.t2-iconbtn[aria-pressed="true"] { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); }
 
 /* ---------------------------------------------------------- 主体布局 */
 
-.t2-shell { display: grid; grid-template-columns: var(--tree-w) minmax(0, 1fr); height: calc(100dvh - var(--head-h)); }
+.t2-shell {
+  display: grid; grid-template-columns: var(--tree-w) minmax(0, 1fr); height: calc(100dvh - var(--head-h));
+  position: relative;
+  /* 左栏收起（参考 DevTools console 的抽屉）：栏宽动画过渡，0.3s 滑走 */
+  transition: grid-template-columns .3s ease;
+}
+.t2-shell.tree-collapsed { grid-template-columns: 0px minmax(0, 1fr); }
 .t2-shell.no-tree { grid-template-columns: minmax(0, 1fr); }
 .t2-shell.no-tree .t2-side { display: none; }
+.t2-shell.no-tree .t2-tree-toggle { display: none !important; }
+
+/* 左栏收起/展开的角落按钮：贴在栏的右下角，收起时跟着栏缘滑到屏幕左下角 */
+.t2-tree-toggle {
+  position: absolute; z-index: 30;
+  left: calc(var(--tree-w) - 40px); bottom: 10px;
+  width: 30px; height: 30px; padding: 0;
+  display: grid; place-items: center;
+  border: 0; border-radius: 999px;
+  background: none; color: var(--ink-2); cursor: pointer;
+  transition: left .3s ease, background-color .2s ease, color .2s ease;
+}
+.t2-tree-toggle:hover { background: rgba(30, 58, 95, .08); color: var(--ink); }
+html[data-theme="dark"] .t2-tree-toggle:hover { background: rgba(255, 255, 255, .09); color: var(--ink); }
+.t2-tree-toggle svg { width: 14px; height: 14px; transition: rotate .3s ease; }
+.t2-shell.tree-collapsed .t2-tree-toggle {
+  left: 12px;
+  /* 收起后按钮浮在内容上，给它卡片底色才够明显（展开态在侧栏奶油底上保持幽灵样式） */
+  background: var(--card); border: 1px solid var(--line-soft); box-shadow: var(--shadow); color: var(--ink);
+}
+html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color: #3a3f47; }
+.t2-shell.tree-collapsed .t2-tree-toggle svg { rotate: 180deg; }
+/* 收起时侧栏内容淡出并裁掉 */
+.t2-shell.tree-collapsed .t2-side { overflow: hidden; }
+.t2-side { transition: opacity .25s ease; min-width: 0; }
 
 /* 左：目录树 */
 .t2-side {
@@ -108,14 +158,14 @@ button { font: inherit; color: inherit; }
   font-size: 12px; cursor: pointer; color: var(--ink-2); white-space: nowrap;
 }
 .t2-chip:hover { border-color: var(--line); }
-.t2-chip[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+.t2-chip[aria-pressed="true"] { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); }
 
 .t2-tree { flex: 1; min-height: 0; overflow: auto; padding: 8px 8px 40px; scrollbar-width: thin; }
 
 .t2-node { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
 .t2-node:hover { background: rgba(30, 58, 95, .05); }
-.t2-node[data-active="true"] { background: var(--ink); color: #fff; }
-.t2-node[data-active="true"] .t2-count { color: rgba(255, 255, 255, .78); }
+.t2-node[data-active="true"] { background: var(--ink); color: var(--ink-contrast); }
+.t2-node[data-active="true"] .t2-count { color: var(--ink-contrast); opacity: .78; }
 
 .t2-caret {
   flex: 0 0 22px; width: 22px; height: 26px; display: grid; place-items: center;
@@ -180,7 +230,7 @@ button { font: inherit; color: inherit; }
   border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font-size: 13px; white-space: nowrap;
 }
 .t2-btn:hover { background: var(--paper-2); }
-.t2-btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
+.t2-btn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-contrast); }
 .t2-btn.primary:hover { background: var(--ink-2); }
 .t2-btn.ghost { border-color: transparent; background: transparent; }
 .t2-btn.ghost:hover { background: rgba(30, 58, 95, .06); }
@@ -195,19 +245,21 @@ button { font: inherit; color: inherit; }
   margin-bottom: 6px; cursor: pointer;
 }
 .t2-file:hover { border-color: var(--line); box-shadow: var(--shadow); }
-.t2-file.is-online .t2-file-ico { box-shadow: inset 0 0 0 2px var(--green); }
+/* 类型图标改为内嵌 SVG（见 app.js 的 fileIconSvg）：折角纸片 + 类型色带 + 扩展名 */
 .t2-file-ico {
-  width: 44px; height: 44px; display: grid; place-items: center; border-radius: 9px;
-  background: var(--paper-2); font: 800 10px/1 var(--mono); letter-spacing: .02em; color: var(--ink-2);
+  width: 44px; height: 44px; display: grid; place-items: center;
 }
-.t2-file-ico[data-k="pdf"] { background: #fdece9; color: #b5311d; }
-.t2-file-ico[data-k="docx"] { background: #e8f0fe; color: #1f4fbf; }
-.t2-file-ico[data-k="image"] { background: #e7f7ef; color: #18794e; }
-.t2-file-ico[data-k="audio"] { background: #fff4de; color: #a8620a; }
+.t2-file-ico svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 1.5px rgba(30, 58, 95, .16)); }
+.t2-file-ico text { font-family: var(--sans); }
 .t2-file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t2-file-sub { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--sub); }
 .t2-file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
 .t2-tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--paper-2); color: var(--ink-2); }
+/* 收起钮：搜索框外面、下方一点点，右对齐（不占一整行的视觉，只探出一个小圆钮） */
+.t2-side-headrow {
+  display: none; position: absolute; right: 12px; top: 56px; margin: 0;
+  /* top 56 = 搜索框(46+8) + chips 相对偏移(58) - (按钮30-chips27)/2，和 chips 行垂直居中 */
+}
 .t2-tag.ok { background: #e7f7ef; color: #18794e; }
 .t2-tag.wait { background: #fbeff2; color: #a13652; }
 .t2-file-act { display: flex; gap: 6px; }
@@ -235,7 +287,7 @@ button { font: inherit; color: inherit; }
 .t2-batch-go { color: var(--sub); font-size: 20px; line-height: 1; padding-right: 2px; }
 .t2-steps { counter-reset: s; list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 8px; }
 .t2-steps li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; font-size: 13px; }
-.t2-steps li::before { content: counter(s); display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: #fff; font: 700 12px/1 var(--sans); }
+.t2-steps li::before { content: counter(s); display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: var(--ink-contrast); font: 700 12px/1 var(--sans); }
 
 /* ---------------------------------------------------------- 预览抽屉 */
 
@@ -245,32 +297,43 @@ button { font: inherit; color: inherit; }
      超出的部分再被 overflow:hidden 裁掉 —— 表现就是"最右侧不显示"。 */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  background: #2b2f36; color: #eee; translate: 0 100%; transition: translate .22s ease, visibility .22s;
+  /* 预览抽屉跟随页面亮/暗（音频播放器保持深色，不参与）；变量在暗色块里定义 */
+  --v-bg: var(--paper-2);
+  --v-head: var(--paper); /* 顶栏用纸色而不是纯白，和整站的奶油底色一个气质 */
+  --v-line: var(--line);
+  --v-btn: var(--card);
+  --v-btn-line: var(--line);
+  --v-btn-hover: var(--paper-2);
+  --v-fg: var(--ink);
+  --v-sub: var(--sub);
+  --v-page-shadow: 0 4px 24px rgba(30, 58, 95, .18);
+  background: var(--v-bg); color: var(--v-fg); translate: 0 100%; transition: translate .22s ease, visibility .22s;
   /* 关闭时必须真正"让开"：只靠 translate 挪走的话，这个满屏 fixed 层仍然在视口里
      接住点击，左侧目录树会整片点不动。visibility 顺手让里面的 iframe/canvas 不再渲染。 */
   visibility: hidden; pointer-events: none;
 }
 .t2-viewer-head, .t2-viewer-body { min-width: 0; }
 .t2-viewer[data-open="true"] { translate: 0 0; visibility: visible; pointer-events: auto; }
-/* 手机端浮动关闭键：默认不显示（桌面端用顶部栏的关闭按钮） */
-.t2-viewer-fab { display: none; }
 .t2-viewer-head {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-  background: #1f2329; border-bottom: 1px solid #3a3f47;
+  background: var(--v-head); border-bottom: 1px solid var(--v-line);
 }
 .t2-viewer-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.t2-viewer-title small { display: block; font-weight: 400; font-size: 12px; color: #9aa3ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t2-viewer .t2-btn { background: #2f343b; border-color: #454b54; color: #eee; }
-.t2-viewer .t2-btn:hover { background: #3a4048; }
+.t2-viewer-title small { display: block; font-weight: 400; font-size: 12px; color: var(--v-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t2-viewer .t2-btn { background: var(--v-btn); border-color: var(--v-btn-line); color: var(--v-fg); }
+.t2-viewer .t2-btn:hover { background: var(--v-btn-hover); }
+/* 预览标题栏的三个图标按钮：统一 36×36，图形 18px */
+.t2-ico-btn { width: 36px; height: 36px; padding: 0; justify-content: center; flex: none; }
+.t2-ico-btn svg { width: 18px; height: 18px; display: block; }
 .t2-viewer-body { overflow: auto; padding: 18px; display: grid; place-items: start center; }
-.t2-viewer-body .pad { padding: 40px; text-align: center; color: #c9ced6; }
+.t2-viewer-body .pad { padding: 40px; text-align: center; color: var(--v-sub); }
 .t2-viewer-body img.t2-img { max-width: min(100%, 1100px); height: auto; background: #fff; border-radius: 6px; }
 .t2-viewer-body .t2-pdf { display: grid; gap: 14px; justify-items: center; width: 100%; }
 .t2-viewer-body .t2-pdf .t2-pdfpage { background: #fff; box-shadow: 0 4px 24px rgba(0, 0, 0, .45); border-radius: 2px; }
 .t2-viewer-body .t2-pdf canvas { display: block; max-width: 100%; height: auto; }
 .t2-viewer-body .t2-doc { background: #fff; color: #222; border-radius: 6px; padding: 8px; max-width: 100%; overflow: auto; }
 .t2-viewer-body .t2-doc .docx-wrapper { background: transparent; padding: 0; }
-.t2-viewer-body .t2-doc .docx-wrapper > section.docx { box-shadow: 0 4px 24px rgba(0, 0, 0, .25); margin-bottom: 14px; }
+.t2-viewer-body .t2-doc .docx-wrapper > section.docx { box-shadow: var(--v-page-shadow); margin-bottom: 14px; }
 .t2-viewer-body .t2-audio { width: min(680px, 100%); padding: 26px; background: #fff; color: var(--ink); border-radius: 12px; display: grid; gap: 14px; }
 .t2-viewer-body .t2-audio audio { width: 100%; }
 
@@ -314,7 +377,7 @@ button { font: inherit; color: inherit; }
 .t2-pl-vol-ico { font-size: 13px; opacity: .7; }
 .t2-pl-vol { flex: 1; max-width: 160px; accent-color: #7fd6ff; }
 .t2-audio-el { display: none; }
-.t2-viewer-body pre.t2-text { width: min(980px, 100%); margin: 0; padding: 16px; background: #fff; color: #222; border-radius: 8px; font: 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.t2-viewer-body pre.t2-text { width: min(980px, 100%); min-height: 100%; box-sizing: border-box; margin: 0; padding: 16px; background: #fff; color: #222; border-radius: 8px; font: 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .t2-viewer-body .t2-sheet { width: min(1100px, 100%); background: #fff; color: #222; border-radius: 8px; padding: 10px; overflow: auto; }
 .t2-viewer-body .t2-sheet table { border-collapse: collapse; font-size: 12.5px; }
 .t2-viewer-body .t2-sheet td, .t2-viewer-body .t2-sheet th { border: 1px solid #ddd; padding: 3px 8px; white-space: nowrap; }
@@ -350,7 +413,7 @@ button { font: inherit; color: inherit; }
 
 .t2-toast {
   position: fixed; left: 50%; bottom: 24px; translate: -50% 0; z-index: 100;
-  padding: 10px 16px; border-radius: 10px; background: var(--ink); color: #fff; font-size: 13px;
+  padding: 10px 16px; border-radius: 10px; background: var(--ink); color: var(--ink-contrast); font-size: 13px;
   box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .18s, translate .18s;
 }
 .t2-toast[data-on="true"] { opacity: 1; translate: -50% -6px; }
@@ -369,7 +432,7 @@ button { font: inherit; color: inherit; }
   .t2-main { order: 1; overflow: visible; padding-bottom: 108px; } /* 给底部搜索框留出位置 */
   .t2-side {
     order: 2; display: none;
-    position: static; inset: auto; translate: none; height: auto; width: auto;
+    position: relative; inset: auto; translate: none; height: auto; width: auto;
     overflow: visible; box-shadow: none; border: 0;
     background: transparent; padding: 0 0 28px;
   }
@@ -380,7 +443,9 @@ button { font: inherit; color: inherit; }
   body.t2-searching .t2-stats,
   body.t2-searching .t2-start { display: none; }
   .t2-menu { display: none !important; }
-  .t2-brand small { display: none; }
+  .t2-tree-toggle { display: none !important; } /* 窄屏没有左栏，用 p2 自己的收起钮 */
+  /* TREE2 字样不再按断点隐藏：待机时顶栏大量留白，没理由藏品牌名。
+     真正放不下的是搜索框归位/搜索态，那条路已有 body.search-undocked 的收缩规则。 */
   .t2-search kbd { display: none; }
 
   /* 待机：搜索框钉在页面底部（距底约 20px） */
@@ -388,17 +453,16 @@ button { font: inherit; color: inherit; }
     position: fixed; left: 14px; right: 14px; bottom: 20px; z-index: 45;
     flex: none; width: auto; max-width: none; margin: 0; padding: 0;
   }
+  .t2-main > .t2-search-hero { box-shadow: 0 8px 28px rgba(30, 58, 95, .28); }
   .t2-main > .t2-search-hero input {
     height: 52px; font-size: 16px; padding-right: 16px; /* ≥16px 防 iOS 聚焦缩放 */
-    box-shadow: 0 8px 28px rgba(30, 58, 95, .28);
   }
-  .t2-main > .t2-search-hero .t2-search-ico { left: 16px; }
   /* 待机时在搜索框上方冒一个小提示：点它才展开目录树，不然很多人不知道入口 */
   .t2-main > .t2-search-hero::after {
     content: '点搜索框，展开目录树 ↓';
     position: absolute; left: 50%; bottom: calc(100% + 10px); translate: -50% 0;
     padding: 6px 12px; border-radius: 999px; white-space: nowrap;
-    background: var(--ink); color: #fff; font-size: 12px; letter-spacing: .02em;
+    background: var(--ink); color: var(--ink-contrast); font-size: 12px; letter-spacing: .02em;
     box-shadow: 0 6px 18px rgba(30, 58, 95, .22); pointer-events: none;
     animation: t2-hint-bob 2.4s ease-in-out infinite;
   }
@@ -408,10 +472,12 @@ button { font: inherit; color: inherit; }
 
   /* 搜索中：搜索框回到文档流，吸顶在目录树上方 */
   body.t2-searching .t2-side > .t2-search-hero {
-    position: sticky; top: var(--head-h); z-index: 20;
-    flex: none; width: auto; max-width: none; margin: 0 0 10px; padding: 10px 0 8px;
-    background: var(--paper);
+    position: relative; /* 作为归位钮的定位锚（相对定位不脱离文档流，不会盖住别的东西） */
+    flex: none; width: auto; max-width: none; margin: 0 0 8px; padding: 0;
+    background: none;
   }
+  body.t2-searching .t2-side-headrow { display: flex; }
+  body.t2-searching .t2-chips { padding-right: 34px; } /* 给右侧的收起钮留位 */
   body.t2-searching .t2-side > .t2-search-hero input { height: 46px; font-size: 16px; box-shadow: none; border-color: var(--ink); }
   body.t2-searching .t2-side > .t2-search-hero .t2-search-ico { left: 16px; }
   /* 搜索时文件列表也让位：结果直接就是下面那棵树 */
@@ -419,6 +485,27 @@ button { font: inherit; color: inherit; }
   body.t2-searching .t2-main .t2-bar { display: none; }
 
   .t2-side .t2-tree { flex: none; overflow: visible; height: auto; }
+
+  /* 归位模式：窄屏顶栏空间紧张，品牌只留爪印图标，搜索框允许收缩，不然会被挤出屏幕（页面看起来就坏了） */
+  body.search-undocked .t2-brand { font-size: 0; gap: 0; }
+  body.search-undocked .t2-search { min-width: 0; }
+  body.search-undocked .t2-top { gap: 8px; }
+
+  /* 归位钮：搜索框下方右侧，点了把搜索框收回顶栏 */
+  .t2-side-headrow { display: flex; justify-content: flex-end; padding: 2px 12px 0; }
+  .t2-p2-toggle {
+    display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+    border: 1px solid var(--line-soft); border-radius: 999px; cursor: pointer;
+    background: var(--card); color: var(--ink-2); box-shadow: var(--shadow);
+  }
+  .t2-p2-toggle:hover { background: var(--paper-2); color: var(--ink); }
+  html[data-theme="dark"] .t2-p2-toggle { border-color: #3a3f47; }
+  html[data-theme="dark"] .t2-p2-toggle:hover { background: var(--paper-2); color: var(--ink); }
+  .t2-p2-toggle svg { width: 15px; height: 15px; transition: rotate .3s ease; }
+  body.search-undocked .t2-p2-toggle svg { rotate: 180deg; }
+  body.search-undocked .t2-main { padding-bottom: 0; } /* 归位后不需要给钉底搜索框留空 */
+  /* 暗色下钉底搜索框的投影换中性黑：原深蓝投影在暗底上会晕出一圈偏色"虚影" */
+  html[data-theme="dark"] .t2-main > .t2-search-hero { box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
   .t2-side .t2-filters { padding: 4px 0 10px; border-bottom: 0; }
 
   .t2-file { grid-template-columns: 40px minmax(0, 1fr); }
@@ -435,29 +522,14 @@ button { font: inherit; color: inherit; }
   .t2-viewer-head {
     position: sticky; top: 0; z-index: 3;
     padding: 6px 8px; gap: 6px;
-    background: #1f2329;
-    border-bottom: 1px solid #3a3f47;
+    background: var(--v-head);
+    border-bottom: 1px solid var(--v-line);
   }
   #v-sub { display: none; } /* 手机上标题栏空间宝贵，类型/大小/路径省掉 */
   .t2-viewer-title { font-size: 13px; }
-  /* 关闭键做成一眼能找到的大按钮 */
-  #v-close {
-    height: 40px; min-width: 52px; padding: 0 12px;
-    font-size: 13px; font-weight: 700; flex: none;
-  }
-  #v-down { height: 40px; padding: 0 12px; font-size: 12.5px; flex: none; }
-
-  /* 浮动关闭键：右下角，避开底部安全区，永远够得到 */
-  .t2-viewer-fab {
-    display: grid; place-items: center;
-    position: fixed; right: 14px;
-    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-    width: 52px; height: 52px; border-radius: 50%;
-    border: 1px solid #4a5058; background: rgba(31, 35, 41, .92); color: #fff;
-    font-size: 20px; line-height: 1; z-index: 5;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
-  }
-  .t2-viewer-fab:active { background: #3a4048; }
+  /* 预览标题栏按钮：手机上一并放大到 40×40，三个键尺寸一致 */
+  .t2-viewer-head .t2-ico-btn { width: 40px; height: 40px; }
+  .t2-viewer-head .t2-ico-btn svg { width: 20px; height: 20px; }
 
   .t2-viewer-body {
     display: block; width: 100%; min-width: 0;
@@ -478,8 +550,10 @@ button { font: inherit; color: inherit; }
   .t2-viewer-body .t2-pdf > p { padding: 8px 12px 0 !important; margin: 0 0 8px !important; font-size: 11.5px !important; }
   .t2-viewer-body .t2-pdfpage { width: 100% !important; border-radius: 0 !important; box-shadow: 0 2px 10px rgba(0, 0, 0, .35) !important; }
 
-  /* Word：整篇按屏幕宽度重排（覆盖 docx-preview 的固定 A4 宽；仍有溢出时 fitWidth 会兜底缩放） */
-  .t2-viewer-body .t2-doc { border-radius: 0; padding: 0; max-width: 100%; overflow-x: auto; }
+  /* Word：整篇按屏幕宽度重排（覆盖 docx-preview 的固定 A4 宽；仍有溢出时 fitWidth 会兜底缩放）。
+     必须写 width:100%：.t2-doc 在预览区网格里是 shrink-to-fit 的居中项，只靠 max-width:100%
+     时里面的百分比宽度链（section 的 width:100%）会塌缩成内容宽，页面反而缩成一小条。 */
+  .t2-viewer-body .t2-doc { width: 100%; border-radius: 0; padding: 0; max-width: 100%; overflow-x: auto; }
   .t2-viewer-body .t2-doc .docx-wrapper { padding: 0 !important; background: transparent !important; }
   /* fitWidth() 会把整篇 zoom 到 0.3 倍（字小到看不清），手机上直接取消缩放，交给下一条规则重排 */
   .t2-viewer-body .t2-doc .docx-wrapper { zoom: 1 !important; }
@@ -517,7 +591,7 @@ button { font: inherit; color: inherit; }
 }
 
 @media (max-width: 560px) {
-  .t2-season { padding: 5px 8px; font-size: 12px; }
+  /* 届别按钮不再缩小：顶栏留白足够，缩了反而和桌面看起来不是一个产品 */
   .t2-stats { gap: 6px; }
   .t2-stat { padding: 6px 9px; }
 }
@@ -637,3 +711,112 @@ body.t2-site-home .t2-search-site-home { display: none; }
   src: url('../vendor/fonts/T2MTExtra.ttf') format('truetype');
   font-display: block;
 }
+
+/* ============================================================
+   暗色模式（<html data-theme="dark">，由顶栏的太阳/月亮键切换）
+   变量整体翻暗；个别写死成白底/浅底的地方在下面点名覆盖。
+   ============================================================ */
+html[data-theme="dark"] {
+  --paper: #17191d;
+  --paper-2: #262a31;
+  --card: #24272d;
+  --ink: #e9e7e2;
+  --ink-2: #c6cbd4;
+  --line: #3a3f47;
+  --line-soft: #2e3239;
+  --sub: #9aa3ad;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px -12px rgba(0, 0, 0, .6);
+  --ink-contrast: #17191d;
+}
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(1200px 420px at 50% -10%, #232a36 0%, rgba(35, 42, 54, 0) 70%),
+    var(--paper);
+}
+/* 预览抽屉的暗色变量（PDF/docx 的"白纸"保留，txt/表格用深色卡片） */
+html[data-theme="dark"] .t2-viewer {
+  --v-bg: #2b2f36;
+  --v-head: #1f2329;
+  --v-line: #3a3f47;
+  --v-btn: #2f343b;
+  --v-btn-line: #454b54;
+  --v-btn-hover: #3a4048;
+  --v-fg: #eee;
+  --v-sub: #9aa3ad;
+  --v-page-shadow: 0 4px 24px rgba(0, 0, 0, .45);
+}
+html[data-theme="dark"] .t2-top { background: rgba(23, 25, 29, .86); }
+html[data-theme="dark"] .t2-side { background: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(255, 255, 255, .02)); }
+html[data-theme="dark"] .t2-search,
+html[data-theme="dark"] .t2-filters select,
+html[data-theme="dark"] .t2-chip,
+html[data-theme="dark"] .t2-iconbtn,
+html[data-theme="dark"] .t2-btn,
+html[data-theme="dark"] .t2-sort,
+html[data-theme="dark"] .t2-stat,
+html[data-theme="dark"] .t2-file,
+html[data-theme="dark"] .t2-tile,
+html[data-theme="dark"] .t2-batch,
+html[data-theme="dark"] .t2-share-card { background: var(--card); }
+html[data-theme="dark"] .t2-btn:hover,
+html[data-theme="dark"] .t2-iconbtn:hover { background: var(--paper-2); }
+html[data-theme="dark"] #fav-entry:hover { background: #2e333b; }
+html[data-theme="dark"] .t2-node:hover { background: rgba(255, 255, 255, .06); }
+html[data-theme="dark"] .t2-btn.ghost:hover { background: rgba(255, 255, 255, .07); }
+html[data-theme="dark"] .t2-fatal-tip code { background: rgba(255, 255, 255, .08); }
+/* 文档内容的"纸"和字色不随主题变：txt/表格在两种模式下都是白纸黑字，
+   暗色适配只作用于抽屉的外观（顶栏/底色/按钮），不碰内容本身。 */
+html[data-theme="dark"] .t2-year-card { box-shadow: 0 4px 16px rgba(0, 0, 0, .3); }
+html[data-theme="dark"] .t2-year-card:hover { box-shadow: 0 10px 26px rgba(0, 0, 0, .45); }
+/* 文件行的选中/悬停阴影在暗底上本来就偏重，不用额外调；类型徽章（.t2-kind）是
+   饱和色底白字，两种模式都成立，保持原样。 */
+
+/* 主题切换键：贴最右上角的无框图标（点谁不是重点，重点是看起来就在角落里）。
+   两个图标叠在同一格子里，按主题淡入淡出 + 转个角度，切换不跳变。 */
+.t2-theme {
+  border: 0; background: none; cursor: pointer; flex: none;
+  width: 34px; height: 34px; margin-right: -6px; /* 抵掉顶栏的右内边距，图标贴到最角上 */
+  display: grid; place-items: center; border-radius: 999px;
+  color: var(--ink-2);
+  transition: color .25s ease, background-color .25s ease;
+}
+.t2-theme:hover { background: rgba(30, 58, 95, .08); color: var(--ink); }
+html[data-theme="dark"] .t2-theme:hover { background: rgba(255, 255, 255, .09); color: var(--ink); }
+.t2-theme svg { grid-area: 1 / 1; width: 17px; height: 17px; display: block; transition: opacity .28s ease, rotate .34s ease; }
+.t2-theme .ico-sun { opacity: 0; rotate: 100deg; }
+.t2-theme .ico-moon { opacity: 1; rotate: 0deg; }
+html[data-theme="dark"] .t2-theme .ico-sun { opacity: 1; rotate: 0deg; }
+html[data-theme="dark"] .t2-theme .ico-moon { opacity: 0; rotate: -100deg; }
+
+/* 切换瞬间的全局过渡：JS 在切换时给 <html> 挂 .theme-anim，450ms 后摘掉。
+   平时挂着会拖慢悬停反馈，所以只在切换的半秒里生效。 */
+html.theme-anim, html.theme-anim body, html.theme-anim * , html.theme-anim *::before, html.theme-anim *::after {
+  transition: background-color .32s ease, color .32s ease, border-color .32s ease, box-shadow .32s ease, fill .32s ease, stroke .32s ease, rotate .34s ease !important;
+}
+/* 上面那条 .t2-btn 的底色覆盖比 .primary 的特异性高，主按钮（下载）在这里单独找回反色 */
+html[data-theme="dark"] .t2-btn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-contrast); }
+
+/* 同理：暗色块的 .t2-chip 底色覆盖会压掉选中态的浅底，选中/当前态在这里单独找回 */
+html[data-theme="dark"] .t2-chip[aria-pressed="true"],
+html[data-theme="dark"] .t2-season[aria-current="true"],
+html[data-theme="dark"] .t2-iconbtn[aria-pressed="true"],
+html[data-theme="dark"] .t2-node[data-active="true"] {
+  background: var(--ink); border-color: var(--ink); color: var(--ink-contrast);
+}
+
+/* 搜索框：暗色下比卡片亮一档，别糊进顶栏；/ 徽章再浅一档保持层次 */
+html[data-theme="dark"] .t2-search input { background: var(--paper-2); }
+html[data-theme="dark"] .t2-search kbd { background: #31363f; }
+
+/* 已入库/新/未入库 小标签：浅粉浅绿在暗底上太扎眼，换成暗色系同色调 */
+html[data-theme="dark"] .t2-tag.ok { background: rgba(34, 160, 107, .10); color: #6aa88c; }
+html[data-theme="dark"] .t2-tag.wait { background: rgba(161, 54, 82, .12); color: #d2909f; }
+html[data-theme="dark"] .t2-tag.new { background: rgba(47, 158, 99, .10); color: #6aa88c; border-color: rgba(127, 208, 166, .18); }
+/* 暗色下类型图标换用暗色配色（每个 SVG 里自带两套变量），不再抢文件名的视觉焦点 */
+html[data-theme="dark"] .t2-file-ico svg { --fim: var(--fimd); --fit: var(--fitd); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .3)); }
+
+/* 搜索框不在顶栏里时（手机端被挪到页面底部、首页隐藏搜索框），
+   顶栏里就没有 margin-left:auto 的元素了，切换键自己顶到最右角。
+   平时（搜索框在顶栏）不动，让搜索框继续负责右推，按钮跟在它后面。 */
+.t2-top:not(:has(> .t2-search)) .t2-theme { margin-left: auto; }
+body.t2-site-home .t2-theme { margin-left: auto; }

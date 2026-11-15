@@ -18,6 +18,16 @@ const LS_PREF = 'tree2.pref';
  * ?api=reset 清掉记忆，回到同源。
  */
 export function apiBase() {
+  const localPreview = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+  // 本地预览永远只读本地库：忽略地址里残留的 ?api=线上地址，也清掉旧记忆。
+  if (localPreview) {
+    try {
+      localStorage.removeItem(LS_API);
+    } catch {
+      /* 隐私模式 */
+    }
+    return '';
+  }
   const q = new URLSearchParams(location.search).get('api');
   if (q !== null) {
     const clean = q.trim().replace(/\/+$/, '');

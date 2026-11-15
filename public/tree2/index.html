@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="utf-8">
   <!-- 有些内嵌浏览器只认 meta，不认响应头；HTML 被缓存就会出现"要刷新一次才是新界面" -->
@@ -7,14 +7,21 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <meta name="description" content="福建高考备考资料导航 tree2：按考试批次浏览原卷、答案、听力与解析，支持 PDF / Word / 图片在线预览。">
   <title>福建高考备考资料导航 · tree2</title>
   <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#1e3a5f">
   <link rel="apple-touch-icon" href="assets/facivon.svg">
-  <link rel="stylesheet" href="css/tree2.css?v=20261108d">
+  <script>
+    // 防白闪：样式表生效前先把上次选的主题写到 <html data-theme>（与 app.js 共用 tree2.pref）
+    try {
+      if (JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark')
+        document.documentElement.dataset.theme = 'dark';
+    } catch (e) { /* 隐私模式 */ }
+  </script>
+  <link rel="stylesheet" href="css/tree2.css?v=20261116h">
   <!-- 首屏用到的渲染库不预加载：pdf.js（1.5 MB）等点开文件时按需拉 -->
   <link rel="preconnect" href="/">
 </head>
@@ -29,14 +36,32 @@
     </a>
     <nav class="t2-seasons" id="seasons" aria-label="选择届别"></nav>
     <form class="t2-search" id="search-form" role="search">
-      <span class="t2-search-ico" aria-hidden="true">⌕</span>
+      <button class="t2-search-btn" id="search-btn" type="button" title="搜索" aria-label="搜索">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </button>
       <input id="q" type="search" placeholder="搜文件名：英语 听力 / 厦门二检 / 省质检" autocomplete="off" enterkeyhint="search" aria-label="搜索文件">
       <kbd>/</kbd>
     </form>
+    <!-- 亮/暗模式切换：贴最右上角的无框图标，两个图标叠着放，由 CSS 按主题淡入淡出 -->
+    <button class="t2-theme" id="theme-toggle" type="button" title="切换亮色/暗色模式" aria-label="切换亮色/暗色模式">
+      <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>
+      </svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </svg>
+    </button>
   </header>
 
   <div class="t2-shell" id="shell">
     <aside class="t2-side" aria-label="目录">
+      <!-- 收起钮：搜索态时搜索框（动态插到本栏顶部）下方右侧，点了回到底部默认状态 -->
+      <div class="t2-side-headrow">
+        <button class="t2-p2-toggle" id="p2-toggle" type="button" title="收起，搜索框回到底部" aria-label="收起，搜索框回到底部">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+      </div>
       <div class="t2-filters">
         <div class="t2-chips" id="kind-chips" aria-label="按类型筛选"></div>
         <button class="t2-btn" type="button" id="fav-entry" style="margin-top:10px;width:100%" title="收藏保存在本浏览器">★ 我的收藏</button>
@@ -53,25 +78,40 @@
         </section>
       </div>
     </main>
+    <!-- 左栏（目录栏）收起钮：参考 DevTools console 的抽屉，贴栏右下角，收起时滑到屏幕左下角 -->
+    <button class="t2-tree-toggle" id="tree-toggle" type="button" title="收起/展开目录栏" aria-label="收起/展开目录栏">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
   </div>
 
   <!-- 预览抽屉 -->
   <section class="t2-viewer" id="viewer" data-open="false" role="dialog" aria-modal="true" aria-label="文件预览">
     <div class="t2-viewer-head">
       <div class="t2-viewer-title" id="v-title"></div>
-      <span id="v-sub" style="font-size:12px;color:#9aa3ad"></span>
-      <button class="t2-btn" type="button" id="v-share" title="生成 /s/ 短链发给别人">分享</button>
-      <button class="t2-btn" type="button" id="v-down">下载</button>
-      <button class="t2-btn" type="button" id="v-close">关闭 Esc</button>
+      <span id="v-sub" style="font-size:12px;color:var(--v-sub)"></span>
+      <!-- 三个统一尺寸的图标按钮（原来的文字按钮宽窄不一，挤在窄屏上很难看） -->
+      <button class="t2-btn t2-ico-btn" type="button" id="v-share" title="生成 /s/ 短链发给别人" aria-label="分享">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/>
+        </svg>
+      </button>
+      <button class="t2-btn t2-ico-btn" type="button" id="v-down" title="下载" aria-label="下载">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>
+        </svg>
+      </button>
+      <button class="t2-btn t2-ico-btn" type="button" id="v-close" title="关闭 (Esc)" aria-label="关闭预览">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 6l12 12"/><path d="M18 6L6 18"/>
+        </svg>
+      </button>
     </div>
     <div class="t2-viewer-body" id="v-body"></div>
-    <!-- 手机端浮动关闭键：顶部栏万一被状态栏/刘海压住，这个永远够得到 -->
-    <button class="t2-viewer-fab" id="v-close-fab" type="button" aria-label="关闭预览">✕</button>
   </section>
 
   <div class="t2-toast" id="t2-toast" role="status"></div>
 
-  <script type="module" src="js/app.js?v=20261115c"></script>
+  <script type="module" src="js/app.js?v=20261115r"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });

@@ -49,8 +49,14 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 
 ## 本地开发
 
-```bash
-node scripts/tree2-files-server.mjs --port 8787 --root . --allow-origin http://localhost:4321
+```text
+npm run dev
 ```
 
-清单、对象库等运行数据只在服务器上，本地没有；需要数据时从服务器备份 `backups/tree2-meta-*.tar.gz` 取。
+使用 Node.js 24，无需安装依赖。打开 [本地示例](http://127.0.0.1:8787/tree2/index.html?api=reset)，进入示例文件夹查看预览。也可以打开 [本地管理页](http://127.0.0.1:8787/tree2/admin.html)，用口令 `tree2-local-preview` 测试上传。示例清单及上传文件保存在 `storage/local-preview/`，与生产数据隔离。本地示例音频使用与线上相同的 Navidrome 分享页：播放器页面和静态资源是线上原样副本，分享信息按本地清单生成。
+
+如果这份预览已在运行，再执行启动命令会显示现有地址。如果默认端口被其他程序使用，在命令提示符执行 `set "PORT=8788" && npm run dev`，或在 PowerShell 执行 `$env:PORT = '8788'; npm run dev`，再打开终端显示的网址。
+
+本地预览默认只用本地数据；在 `127.0.0.1` 上即使浏览器以前记住了线上 API，也会自动回到同源。需要临时查看线上数据时，手动在地址后加 `?api=https://files.example.com`；打开 `?api=reset` 即可切回。管理上传页始终使用本地服务。
+
+直接启动 `node scripts/tree2-files-server.mjs` 时，服务使用通常的 `public/tree2/data/` 和 `storage/tree2/`，干净仓库里的届别列表为空。

@@ -13,3 +13,6 @@ js_tmp_check/
 node_modules/
 .DS_Store
 Thumbs.db
+
+# 临时预览产物
+.tmp-preview/

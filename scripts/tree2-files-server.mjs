@@ -447,6 +447,9 @@ route('GET', /^\/api\/tree2\/nd-share$/, async (req, res, m, url) => {
   let key = '';
   try { key = safeKey(url.searchParams.get('k') || ''); } catch { key = ''; }
   if (!key) return json(res, 200, { id: null });
+  if (serveLocalPlayer && AUDIO_EXT.has(path.extname(key)) && (await keyMetaMap()).has(key)) {
+    return json(res, 200, { id: localPlayerId(key) });
+  }
   // share-map 的键是裸 sha256（无 xx/ 前缀、无扩展名），与 /s/ 落地页同款归一化
   const sha = path.basename(key, path.extname(key));
   const sm = (await readJsonCached(ND_SHARE_FILE, 'shares', 'sharesMtime')) || {};
@@ -1189,7 +1192,7 @@ setInterval(() => {
   const o = {};
   for (const [k, v] of statsMem) o[k] = v;
   fsp.writeFile(`${STATS_FILE}.tmp`, JSON.stringify(o, null, 1)).then(() => fsp.rename(`${STATS_FILE}.tmp`, STATS_FILE)).then(() => { statsDirty = false; }).catch(() => {});
-}, 60000);
+}, 60000).unref();
 function bumpStat(key, field) {
   const e = statsMem.get(key) || { dl: 0, pv: 0 };
   e[field] = (e[field] || 0) + 1;
@@ -1947,7 +1950,13 @@ route('GET', /^\/api\/tree2\/health$/, async (req, res) => {
  * 根路径落地页。
  * 直接开 http://host:8787/ 的人多半是想「看看有什么」，给一个带链接的页面比 {"error":"没找到"} 有用得多。
  */
-route('GET', /^\/$/, async (req, res) => {
+route('GET', /^\/$/, async (req, res, m, url) => {
+  // 带参数的根路径（/?s=2026 这类书签/分享，和线上站点一样的地址形态）直接进资料库；
+  // 落地页只保留给裸根路径，纯本地开发用。
+  if (url.search) {
+    res.writeHead(302, { ...cors(req), Location: `/tree2/index.html${url.search}` });
+    return res.end();
+  }
   const files = await fsp.readdir(cfg.data).catch(() => []);
   const years = files.filter((f) => /^\d{4}\.json$/.test(f)).map((f) => f.slice(0, 4)).sort();
   const addr = req.headers.host || '127.0.0.1:8787';
@@ -1956,22 +1965,58 @@ route('GET', /^\/$/, async (req, res) => {
     `<tr><td><a href="${href}">${label}</a></td><td><code>${href.replace(api, '')}</code></td><td>${note}</td></tr>`;
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>tree2 文件服务</title>
+<meta name="color-scheme" content="light dark">
+<script>
+  // 与资料库页共用 tree2.pref 的主题记忆，样式生效前先写好，防白闪
+  try { if (JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch (e) {}
+</script>
 <style>
- body{margin:0;padding:40px 20px;font:14px/1.7 "Microsoft YaHei","PingFang SC",sans-serif;color:#1e3a5f;
-      background:radial-gradient(900px 340px at 50% -10%,#fff6e0,rgba(255,246,224,0) 70%),#fffaf0}
+ :root{--paper:#fffaf0;--paper-2:#fdf3dd;--card:#fff;--ink:#1e3a5f;--ink-2:#33506f;--line:#d9cdb5;--line-soft:#ece1ca;--sub:#8a7f6e;--ink-contrast:#fff}
+ html[data-theme="dark"]{--paper:#17191d;--paper-2:#262a31;--card:#24272d;--ink:#e9e7e2;--ink-2:#c6cbd4;--line:#3a3f47;--line-soft:#2e3239;--sub:#9aa3ad;--ink-contrast:#17191d}
+ *{box-sizing:border-box}
+ body{margin:0;padding:0 20px 48px;font:14px/1.7 "Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);
+      background:radial-gradient(900px 340px at 50% -10%,#fff6e0,rgba(255,246,224,0) 70%),var(--paper);
+      transition:background-color .3s ease,color .3s ease}
+ html[data-theme="dark"] body{background:radial-gradient(900px 340px at 50% -10%,#232a36,rgba(35,42,54,0) 70%),var(--paper)}
+ .t-top{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;height:52px;
+        margin:0 -20px 26px;padding:0 16px;background:rgba(255,250,240,.86);backdrop-filter:blur(10px);
+        border-bottom:1px solid var(--line-soft);transition:background-color .3s ease,border-color .3s ease}
+ html[data-theme="dark"] .t-top{background:rgba(23,25,29,.86)}
+ .t-brand{font-weight:900;letter-spacing:.04em}
+ .t-brand small{font-weight:500;font-size:11px;color:var(--sub);letter-spacing:.18em;margin-left:6px}
+ .t-spacer{flex:1}
+ .t-link{padding:7px 14px;background:var(--ink);color:var(--ink-contrast);border-radius:9px;text-decoration:none;font-weight:600;font-size:13px}
+ .t-toggle{border:0;background:none;cursor:pointer;width:34px;height:34px;border-radius:999px;display:grid;place-items:center;color:var(--ink-2);padding:0}
+ .t-toggle:hover{background:rgba(30,58,95,.08)}
+ html[data-theme="dark"] .t-toggle:hover{background:rgba(255,255,255,.09)}
+ .t-toggle svg{width:17px;height:17px;grid-area:1/1;transition:opacity .28s ease,rotate .34s ease}
+ .t-toggle .ico-sun{opacity:0;rotate:100deg}
+ html[data-theme="dark"] .t-toggle .ico-sun{opacity:1;rotate:0deg}
+ html[data-theme="dark"] .t-toggle .ico-moon{opacity:0;rotate:-100deg}
  main{max-width:760px;margin:0 auto}
- h1{font-size:24px;margin:0 0 4px}p.deck{color:#8a7f6e;margin:0 0 24px}
- table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #e8dcc3;border-radius:10px;overflow:hidden}
- td{padding:9px 12px;border-bottom:1px solid #f0e8d8;vertical-align:top}
+ h1{font-size:24px;margin:0 0 4px}p.deck{color:var(--sub);margin:0 0 24px}
+ table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;transition:background-color .3s ease,border-color .3s ease}
+ td{padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
  tr:last-child td{border-bottom:0}
- code{font-size:12px;color:#6b6153;word-break:break-all}
- a{color:#1e3a5f}
- .big{display:inline-block;margin:0 0 24px;padding:11px 20px;background:#1e3a5f;color:#fff;border-radius:9px;text-decoration:none}
+ code{font-size:12px;color:var(--sub);word-break:break-all}
+ a{color:var(--ink)}
+ .big{display:inline-block;margin:0 0 24px;padding:11px 20px;background:var(--ink);color:var(--ink-contrast);border-radius:9px;text-decoration:none}
  h2{font-size:15px;margin:26px 0 8px}
-</style></head><body><main>
+ .theme-anim *,.theme-anim body{transition:background-color .32s ease,color .32s ease,border-color .32s ease !important}
+</style></head>
+<body>
+<header class="t-top">
+  <span class="t-brand">tree2 文件服务<small>DEV SERVER</small></span>
+  <span class="t-spacer"></span>
+  <a class="t-link" href="/tree2/index.html?api=${api}">打开资料库 →</a>
+  <button class="t-toggle" id="theme-toggle" type="button" title="切换亮色/暗色模式" aria-label="切换亮色/暗色模式">
+    <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+    <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+  </button>
+</header>
+<main>
 <h1>tree2 文件服务</h1>
 <p class="deck">静态页面 + 清单 + 文件字节。下面每个链接都能直接点。</p>
-<a class="big" href="/tree2/index.html?api=${api}">打开 tree2 资料库 →</a>
 <table>
 ${row('资料库页面', `/tree2/index.html?api=${api}`, '目录树、搜索、在线预览、上传')}
 ${row('渲染自检', `/tree2/selftest.html?api=${api}`, '把已入库的文件逐类型渲染一遍并计时')}
@@ -1986,7 +2031,19 @@ ${row('取文件', `/api/tree2/files/${years[years.length - 1] || '2026'}?k=ab%2
 ${row('秒传探测', `/api/tree2/files/${years[years.length - 1] || '2026'}?h=&lt;sha256&gt;`, '返回 {exists,key}')}
 ${row('存储状态', `/api/tree2/storage/${years[years.length - 1] || '2026'}`, '只列真正在盘上的键')}
 </table>
-</main></body></html>`;
+</main>
+<script>
+  document.getElementById('theme-toggle').onclick = () => {
+    const root = document.documentElement;
+    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    root.classList.add('theme-anim');
+    root.dataset.theme = next;
+    try { const p = JSON.parse(localStorage.getItem('tree2.pref') || '{}'); p.theme = next; localStorage.setItem('tree2.pref', JSON.stringify(p)); } catch (e) {}
+    clearTimeout(window.__t2anim);
+    window.__t2anim = setTimeout(() => root.classList.remove('theme-anim'), 450);
+  };
+</script>
+</body></html>`;
   res.writeHead(200, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(html);
 });
@@ -2025,6 +2082,10 @@ async function serveStatic(req, res, pathname) {
 
 // ---------------------------------------------------------------- 主循环
 
+const playerDirectory = cfg.host === '127.0.0.1' && process.env.TREE2_LOCAL_PLAYER_DIR;
+const { createLocalPlayer, localPlayerId } = playerDirectory ? await import('./preview-local-player.mjs') : {};
+const serveLocalPlayer = await createLocalPlayer?.(playerDirectory, async key => (await keyMetaMap()).get(key));
+
 async function tree2Handler(req, res) {
   // json() 需要读 Origin 才能回正确的 CORS 头
   res.req = req;
@@ -2035,6 +2096,15 @@ async function tree2Handler(req, res) {
   }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
+    if (serveLocalPlayer && (req.method === 'GET' || req.method === 'HEAD')) {
+      if (url.pathname.startsWith('/music/share/')) {
+        requireRead(req);
+        if (await serveLocalPlayer(req, res, url)) return;
+      }
+      if (/^\/(?:music-custom\.(?:js|css)|assets\/(?:facivon\.svg|pet\.gif))$/.test(url.pathname)) {
+        return await serveStatic(req, res, `/tree2${url.pathname}`);
+      }
+    }
     for (const r of router) {
       // HEAD 按 GET 处理：<audio preload="metadata">、下载器的探测、CORS 预检都会先发 HEAD，
       // 只认 GET 的话它们一律拿 404，音频就播不了、下载器也不认。
@@ -2099,7 +2169,16 @@ try {
   console.error('[tree2] 无法迁移目录标识或旧口令，尚未迁移的旧授权暂停使用', error);
 }
 sweepUploads();
+function onListenError(error) {
+  console.error(`tree2 无法监听 ${cfg.host}:${cfg.port}（${error.code || error.message}）`);
+  if (process.connected) {
+    process.send({ type: 'listen-error', code: error.code }, () => process.disconnect());
+  }
+  process.exitCode = 1;
+}
+server.once('error', onListenError);
 server.listen(cfg.port, cfg.host, () => {
+  server.off('error', onListenError);
   const addr = `${cfg.host}:${server.address().port}`;
   console.log(`tree2 文件服务已启动  http://${addr}`);
   console.log(`  静态站  http://${addr}/tree2/index.html?api=http://${addr}`);
@@ -2107,4 +2186,8 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`  清单    ${cfg.data}`);
   console.log(`  鉴权    ${cfg.token ? '写操作需要 Bearer token' : '未设口令（仅建议本机使用）'}${cfg.privateRead ? '，读也要口令' : ''}`);
   console.log(`  CORS    ${cfg.allowOrigin.join(', ')}`);
+  if (process.connected) {
+    process.once('disconnect', () => server.close());
+    process.send({ type: 'listening', port: server.address().port });
+  }
 });

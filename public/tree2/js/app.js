@@ -6,10 +6,51 @@
 //   * 在线状态来自 /api/tree2/storage：有真实字节的文件才能预览/下载，其余走网盘兜底。
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
-import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115a';
-import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115b';
+import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115b';
+import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115g';
 
 const $ = (sel, root = document) => root.querySelector(sel);
+
+// ---------------------------------------------------------------- 主题（亮/暗）
+// 初始值由 index.html 头部的内联脚本先写好（防白闪）；这里只负责点击切换和记忆。
+// 切换时给 <html> 挂 .theme-anim 让全页颜色过渡半秒（CSS 里定义），平时不挂，不拖慢悬停。
+let themeAnimT = 0;
+// ---------------------------------------------------------------- 左栏 / p2 收起
+// 左栏：参考 DevTools console 的抽屉，右下角按钮收起，再点屏幕左下角的按钮展开；记忆在 pref 里。
+// p2：窄屏时搜索框下方的堆叠区（筛选+收藏+树），底部同款收起钮。
+const shellEl = $('#shell');
+const treeToggleBtn = $('#tree-toggle');
+if (shellEl && treeToggleBtn) {
+  const applyTree = () => shellEl.classList.toggle('tree-collapsed', pref.get('tree-collapsed', false) === true);
+  applyTree();
+  treeToggleBtn.onclick = () => {
+    const next = !shellEl.classList.contains('tree-collapsed');
+    shellEl.classList.toggle('tree-collapsed', next);
+    pref.set('tree-collapsed', next);
+  };
+}
+const p2ToggleBtn = $('#p2-toggle');
+if (p2ToggleBtn) {
+  // 这个钮只有一个语义：收起筛选/目录堆叠区，搜索框回到底部钉住的默认状态。
+  // 点完按钮自己会随堆叠区一起消失；想再展开就点底部的搜索框（原有交互）。
+  p2ToggleBtn.onclick = () => {
+    document.body.classList.remove('search-undocked');
+    pref.set('p2-collapsed', false);
+    exitMobileSearch();
+  };
+}
+
+const themeBtn = $('#theme-toggle');
+if (themeBtn)
+  themeBtn.onclick = () => {
+    const root = document.documentElement;
+    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    root.classList.add('theme-anim');
+    root.dataset.theme = next;
+    pref.set('theme', next);
+    clearTimeout(themeAnimT);
+    themeAnimT = setTimeout(() => root.classList.remove('theme-anim'), 450);
+  };
 
 const state = {
   seasons: [],
@@ -47,6 +88,54 @@ const kindLabel = (k) => KIND_LABEL[k] || '文件';
 const extBadge = (name) => {
   const e = extOf(name);
   return (e ? e.slice(0, 4) : '?').toUpperCase();
+};
+
+/**
+ * 文件列表左侧的类型图标（SVG）：一张带折角的“纸”，下半压一条色带写扩展名，
+ * 上半画一个跟随类型的小图形（音频=音符、图片=山、其余=正文行）。
+ * 颜色沿用旧文字徽章的配色（.t2-file-ico[data-k] 那套），视觉上无缝替换。
+ */
+const ICON_COLORS = {
+  pdf: { main: '#b5311d', tint: '#fdece9' },
+  docx: { main: '#1f4fbf', tint: '#e8f0fe' },
+  'legacy-doc': { main: '#1f4fbf', tint: '#e8f0fe' },
+  sheet: { main: '#15803d', tint: '#e7f7ef' },
+  slides: { main: '#d97706', tint: '#fef3e2' },
+  'legacy-ppt': { main: '#d97706', tint: '#fef3e2' },
+  image: { main: '#18794e', tint: '#e7f7ef' },
+  audio: { main: '#a8620a', tint: '#fff4de' },
+  text: { main: '#64748b', tint: '#eef2f6' },
+  archive: { main: '#7c5cd6', tint: '#f0ebfc' },
+  other: { main: '#8a7f6e', tint: '#f6efe2' },
+};
+/* 暗色下的配色：纸面用带类型色相的深色，主色提亮一档，避免亮色块在暗底上扎眼 */
+const ICON_COLORS_DARK = {
+  pdf: { main: '#d08a76', tint: '#33231f' },
+  docx: { main: '#7f9fdc', tint: '#1f2637' },
+  'legacy-doc': { main: '#7f9fdc', tint: '#1f2637' },
+  sheet: { main: '#5cb98a', tint: '#1c2f26' },
+  slides: { main: '#dca04d', tint: '#332a1a' },
+  'legacy-ppt': { main: '#dca04d', tint: '#332a1a' },
+  image: { main: '#5cb98a', tint: '#1c2f26' },
+  audio: { main: '#d9a55e', tint: '#332a17' },
+  text: { main: '#8fa1b5', tint: '#232930' },
+  archive: { main: '#a48ee0', tint: '#25202f' },
+  other: { main: '#a99e8d', tint: '#26231e' },
+};
+/* 页面主体的路径，折角在右上（28,4 → 34,10）。 */
+const ICON_PAGE_D = 'M12 4h16l6 6v28a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z';
+const iconGlyph = (k) => {
+  if (k === 'audio')
+    return `<circle cx="16.8" cy="18.8" r="2.3" style="fill:var(--fim)" opacity=".5"/><path d="M19.1 18.8V11l5-1.2v4.4" fill="none" style="stroke:var(--fim)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity=".5"/>`;
+  if (k === 'image')
+    return `<rect x="13.5" y="11.5" width="15" height="10.5" rx="1.5" fill="none" style="stroke:var(--fim)" stroke-width="1.6" opacity=".5"/><circle cx="17.4" cy="14.8" r="1.3" style="fill:var(--fim)" opacity=".5"/><path d="M14.8 20.4l3.8-3.8 2.8 2.8 2-2 2.8 3" fill="none" style="stroke:var(--fim)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity=".5"/>`;
+  return `<path d="M14.5 15h13M14.5 19h8.5" fill="none" style="stroke:var(--fim)" stroke-width="2" stroke-linecap="round" opacity=".4"/>`;
+};
+const fileIconSvg = (name, k) => {
+  const c = ICON_COLORS[k] || ICON_COLORS.other;
+  const d = ICON_COLORS_DARK[k] || ICON_COLORS_DARK.other;
+  // 亮暗两套配色都写进 CSS 变量，主题切换由 CSS 换变量完成（能跟着 theme-anim 一起过渡）
+  return `<svg viewBox="0 0 44 44" aria-hidden="true" style="--fim:${c.main};--fit:${c.tint};--fimd:${d.main};--fitd:${d.tint}"><path d="${ICON_PAGE_D}" style="fill:var(--fit);stroke:var(--fim)" stroke-width="1.5"/><path d="M28 4l6 6h-4a2 2 0 0 1-2-2z" style="fill:var(--fim)" opacity=".28"/>${iconGlyph(k)}<rect x="8" y="26.5" width="26" height="8" rx="2" style="fill:var(--fim)"/><text x="21" y="30.5" text-anchor="middle" dominant-baseline="central" font-size="6" font-weight="800" letter-spacing=".5" fill="#fff">${esc(extBadge(name))}</text></svg>`;
 };
 export { kindOf };
 
@@ -260,6 +349,8 @@ const KIND_CHIPS = [
 // 桌面端照旧放顶栏。挪的是同一个 DOM 节点，#q 上的监听器不会丢。
 const mqPhone = window.matchMedia('(max-width: 900px)');
 const isSearching = () => document.body.classList.contains('t2-searching');
+// 归位模式（p2 收起）：窄屏下搜索框回顶栏，不钉底、不搬来搬去；记忆在 pref 的 p2-collapsed 里
+const isUndocked = () => document.body.classList.contains('search-undocked');
 
 /** 把搜索框安置到指定宿主：head(桌面) / main(手机待机) / side(手机搜索中) */
 function placeSearch(where) {
@@ -268,13 +359,15 @@ function placeSearch(where) {
   const side = document.querySelector('.t2-side');
   const head = document.querySelector('.t2-top');
   if (!form || !main || !side || !head) return null;
-  form.classList.toggle('t2-search-hero', Boolean(mqPhone.matches));
-  const host = !mqPhone.matches ? head : where === 'side' ? side : main;
+  form.classList.toggle('t2-search-hero', Boolean(mqPhone.matches) && !isUndocked());
+  const host = !mqPhone.matches || isUndocked() ? head : where === 'side' ? side : main;
   if (form.parentElement !== host) {
-    if (!mqPhone.matches) {
-      // 桌面端回到原来的位置（顶栏最右，seasons 之后）。之前用 insertBefore 插到
-      // 第一个子节点，缩窗再拉宽后搜索框会跑到最左，把品牌和届别选择顶到最右端。
-      host.appendChild(form);
+    if (host === head) {
+      // 顶栏：插到亮暗切换键之前——亮暗键永远贴最右上角。之前锚点写的 #p2-toggle
+      // 在侧栏里，head 里永远找不到，appendChild 会把搜索框排到亮暗键右边。
+      const anchor = head.querySelector('#theme-toggle');
+      if (anchor) head.insertBefore(form, anchor);
+      else host.appendChild(form);
     } else {
       host.insertBefore(form, host.firstChild);
     }
@@ -292,11 +385,22 @@ function flipMove(form, before, after) {
   requestAnimationFrame(() => {
     form.style.transition = 'transform .32s cubic-bezier(.2, .8, .2, 1)';
     form.style.transform = '';
+    // 动画结束把内联 transition 摘掉：一直挂在 fixed 元素上会让它常驻合成层，
+    // 滚动时留下过期图层碎片——就是搜索框上下的"虚影"。
+    setTimeout(() => {
+      form.style.transition = '';
+      form.style.transform = '';
+    }, 340);
   });
 }
 
 function enterMobileSearch() {
   if (!mqPhone.matches || isSearching()) return;
+  if (isUndocked()) {
+    // 归位模式：搜索框已经在顶栏，只需让筛选/目录堆叠区在下方出现
+    document.body.classList.add('t2-searching');
+    return;
+  }
   const form = $('#search-form');
   if (!form) return;
   const q = $('#q');
@@ -814,7 +918,7 @@ function renderSearchResults(main) {
       <p class="t2-deck">合计 ${fmtSize(bytes)} · 已入库 ${online} · 支持文件名和拼音首字母（比如 fzyj = 福州一检、sxda = 数学答案）。清空搜索框回到目录。</p>
     </section>
     <div class="t2-bar">
-      <span class="t2-deck" style="margin:0">${hits.length ? '点击文件名在线预览，或用右侧按钮下载/分享' : ''}</span>
+      <span class="t2-deck" style="margin:0 clamp(14px, 3vw, 36px)">${hits.length ? '点击文件名在线预览，或用右侧按钮下载/分享' : ''}</span>
       <span class="t2-grow"></span>
     </div>
     <ul class="t2-list"></ul>`;
@@ -867,6 +971,10 @@ async function renderFavorites(main) {
 function renderHome(main) {
   const t = state.manifest.totals;
   const st = state.storage;
+  const kinds = state.manifest.kinds || {};
+  const stages = state.manifest.stages || {};
+  const year = state.manifest.year || state.query.s;
+  const title = state.manifest.title || `${year} 届`;
   const byStage = {};
   for (const b of state.manifest.batches) byStage[b.stage] = (byStage[b.stage] || 0) + 1;
   // 最近 7 天新增（跨批次收集，最新在前）
@@ -876,16 +984,16 @@ function renderHome(main) {
   fresh.sort((a, b) => String(b.file.w || '').localeCompare(String(a.file.w || '')));
   main.innerHTML = `
     <section class="t2-hero">
-      <div class="t2-kicker">资料库 · ${esc(state.manifest.title)}</div>
-      <h1 class="t2-title">福建高考备考资料 <em>${esc(state.manifest.year)}</em></h1>
+      <div class="t2-kicker">资料库 · ${esc(title)}</div>
+      <h1 class="t2-title">福建高考备考资料 <em>${esc(year)}</em></h1>
       <p class="t2-deck">按考试批次归档：原卷、答案、听力、解析。左侧目录树逐层展开；有真实文件入库的条目可以<strong>在线预览</strong>（PDF / Word / 图片免下载），没有的走网盘。</p>
       <div class="t2-stats">
-        <div class="t2-stat"><b>${t.batches}</b><span>场考试</span></div>
+        <div class="t2-stat"><b>${t.batches ?? state.manifest.batches.length}</b><span>场考试</span></div>
         <div class="t2-stat"><b>${t.files}</b><span>条资料</span></div>
         <div class="t2-stat"><b>${fmtSize(t.bytes)}</b><span>原始体积</span></div>
         <div class="t2-stat"><b>${st.keys.size}</b><span>个文件可预览</span></div>
-        <div class="t2-stat"><b>${state.manifest.kinds.pdf || 0}</b><span>份 PDF</span></div>
-        <div class="t2-stat"><b>${state.manifest.kinds.docx || 0}</b><span>份 Word</span></div>
+        <div class="t2-stat"><b>${kinds.pdf || 0}</b><span>份 PDF</span></div>
+        <div class="t2-stat"><b>${kinds.docx || 0}</b><span>份 Word</span></div>
       </div>
       ${
         t.duplicateFiles
@@ -896,7 +1004,7 @@ function renderHome(main) {
     <section class="t2-fresh">
       <h3 style="font-family:var(--serif);margin:0 0 10px">最近 7 天新增 <span style="color:var(--sub);font-size:13px;font-family:var(--sans)">${fresh.length} 份</span></h3>
       <ul class="t2-list" id="fresh-list" style="margin:0"></ul>
-      <p class="t2-deck" style="margin-top:8px;font-size:12.5px">点文件名直接预览；新的听力会同步出现在音乐库里。</p>
+      <p class="t2-deck" style="margin:8px clamp(14px, 3vw, 36px) 0;font-size:12.5px">点文件名直接预览；新的听力会同步出现在音乐库里。</p>
     </section>
     <section class="t2-start">
       <h3 style="font-family:var(--serif);margin:0 0 10px">怎么找</h3>
@@ -909,7 +1017,7 @@ function renderHome(main) {
       <div class="t2-grid3">
         ${Object.entries(byStage)
           .map(([stage]) => {
-            const meta = state.manifest.stages[stage] || { name: stage };
+            const meta = stages[stage] || { name: stage };
             return `<div class="t2-tile" data-stage="${esc(stage)}"><h4>${esc(stage)} · ${esc(meta.name)}</h4><p>${byStage[stage]} 批 · ${esc(meta.note || '')}</p></div>`;
           })
           .join('')}
@@ -997,7 +1105,7 @@ function fileRow(file, parent, focus, season) {
   const k = kindOf(file.n);
   const online = isOnline(file);
   li.innerHTML = `
-    <div class="t2-file-ico" data-k="${esc(k)}" title="${esc(kindLabel(k))}">${esc(extBadge(file.n))}</div>
+    <div class="t2-file-ico" data-k="${esc(k)}" title="${esc(kindLabel(k))}">${fileIconSvg(file.n, k)}</div>
     <div style="min-width:0">
       <div class="t2-file-name" title="${esc(file.n)}">${esc(file.n)}</div>
       <div class="t2-file-sub">
@@ -1057,6 +1165,24 @@ async function openViewer(file, parent, noPush) {
   if (subEl) subEl.textContent = `${kindLabel(k)} · ${fmtSize(file.s)} · ${parent || '/'}`;
   bind('#v-down', () => (location.href = fileUrl(state.query.s, file, { download: true })));
   bind('#v-share', () => doShare(file));
+
+  // 音频且已同步出黑胶页：先探测，命中就直接整页跳转。
+  // 抽屉和历史记录都不能先动——先开抽屉再跳，用户会看到两层遮罩先后盖上来，
+  // 而且回退键落回的是带 ?f= 的那条记录，返回行为就乱了。这里的守卫只比 ticket
+  //（抽屉还没开，dataset.open 可能还是上一次留下的 true，不能算数）。
+  if (isOnline(file) && canRender(file.n) && k === 'audio' && file.k) {
+    try {
+      const r = await fetch(`${apiBase()}/api/tree2/nd-share?k=${encodeURIComponent(file.k)}`, { signal: AbortSignal.timeout?.(5000) });
+      if (r.ok) {
+        const { id } = await r.json();
+        if (id && ticket === viewerTicket) {
+          location.assign(new URL(`/music/share/${encodeURIComponent(id)}`, apiBase() || location.origin));
+          return;
+        }
+      }
+    } catch { /* 接口慢/挂：走下面的内嵌播放器 */ }
+  }
+
   box.dataset.open = 'true';
   document.body.style.overflow = 'hidden';
   writeUrl(false);
@@ -1074,20 +1200,6 @@ async function openViewer(file, parent, noPush) {
     // 浏览器原生能渲染的，直接给 URL，不下载完整字节（音频还能边下边播）
     const url = fileUrl(state.query.s, file);
     currentUrl = url;
-    if (k === 'audio' && file.k) {
-      // 音频预览与 /s/ 分享一致：优先整页跳 Navidrome 黑胶页（±15s/倍速都在那边）；
-      // 还没同步出黑胶页（share-map 无映射）时回退内嵌播放器
-      try {
-        const r = await fetch(`${apiBase()}/api/tree2/nd-share?k=${encodeURIComponent(file.k)}`, { signal: AbortSignal.timeout?.(5000) });
-        if (r.ok) {
-          const { id } = await r.json();
-          if (id && isCurrent()) {
-            location.assign(`/music/share/${encodeURIComponent(id)}`);
-            return;
-          }
-        }
-      } catch { /* 接口慢/挂：直接走内嵌播放器，别等 */ }
-    }
     if (isCurrent()) void render($('#v-body'), url, file.n, { isCurrent });
     return;
   }
@@ -1314,6 +1426,11 @@ function wire() {
   }
 
   bind('#search-form', (e) => e.preventDefault(), 'submit');
+  // 搜索按钮：主动触发一次搜索，并收起手机键盘让结果露出来
+  bind('#search-btn', () => {
+    go({ q: $('#q').value.trim() });
+    $('#q')?.blur();
+  });
 
   // ☰ 在手机上已隐藏，保留绑定以便将来恢复入口
   bind('#menu', () => (isSearching() ? exitMobileSearch() : enterMobileSearch()));
@@ -1328,7 +1445,6 @@ function wire() {
   });
 
   bind('#v-close', closeViewerBack);
-  bind('#v-close-fab', closeViewerBack); // 手机端浮动关闭键，顶部栏被状态栏遮住时也能关
 
   window.addEventListener('popstate', async () => {
     if ($('#viewer')?.dataset.open === 'true') closeViewer(); // 返回键关闭播放器

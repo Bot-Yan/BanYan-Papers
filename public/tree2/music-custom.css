@@ -1,8 +1,39 @@
 /* tree2 × Navidrome 自定义外观 v5
    深蓝底 + 青蓝主色 + 大圆角，与 tree2 播放器同一套视觉 */
 
+/* 主题由 tree2 站内的亮/暗开关决定（music-custom.js 把它写到 <html data-theme>），
+   跟系统偏好无关。暗色就是 Navi 自己的暗色外观，不再额外叠底色；
+   亮色在下面整页刷成「白中带淡绿」。 */
 body {
-  background: radial-gradient(1200px 620px at 50% -15%, #123244 0%, #08131a 62%) fixed !important;
+  background: #f7fafc !important;
+}
+
+/* ---------------- 亮色：白中带淡绿 ---------------- */
+/* Navi 的全屏容器自带黑色 75% 遮罩 + 白字（暗色外观），
+   亮色下整块换成淡绿白底、深绿灰字 */
+html[data-theme="light"] .react-jinke-music-player-mobile.default-bg {
+  background: linear-gradient(180deg, #f7fcf8 0%, #e9f4ec 100%) !important;
+  color: #2c4a38;
+}
+/* 进度条的白轨在浅底上会隐形，改成淡绿灰（Navi 自己的规则更专，得加 !important） */
+html[data-theme="light"] .rc-slider-rail {
+  background-color: #cfe0d4 !important;
+}
+/* 两侧时间数字原来是半透明白，浅底上看不见，换成半透明深绿 */
+html[data-theme="light"] .react-jinke-music-player-mobile-progress .current-time,
+html[data-theme="light"] .react-jinke-music-player-mobile-progress .duration {
+  color: rgba(44, 74, 56, .62) !important;
+}
+/* 白色圆形播放键在浅底上加一圈柔和投影，免得边缘糊掉 */
+html[data-theme="light"] .play-btn svg {
+  filter: drop-shadow(0 3px 8px rgba(44, 74, 56, .28));
+}
+/* 底部播放模式/播放列表两个图标：Navi 写死半透明白，浅底上快看不见了 */
+html[data-theme="light"] .react-jinke-music-player-mobile-operation .item svg {
+  color: rgba(44, 74, 56, .62) !important;
+}
+html[data-theme="light"] .react-jinke-music-player-mobile-operation .item:hover svg {
+  color: rgba(44, 74, 56, .95) !important;
 }
 .MuiPaper-root,
 .MuiCard-root {
@@ -64,54 +95,63 @@ body {
 .t2-nd-skip > svg {
   width: 40px;
 }
+/* 倍速：跟 ±15s 同款，34px 刚好装下「1.5x」 */
+.t2-nd-rate {
+  width: 36px;
+}
+.t2-nd-rate > svg {
+  width: 36px;
+}
+/* 音量贴最右：提到倍速之上，拉条展开时才能整块盖住左边的倍速/±15s
+   （音量带 transform，自身是层叠上下文，不给 z-index 会被 DOM 靠后的倍速压住） */
 .t2-nd-vol-inline {
-  width: 22px;
+  width: 30px;
+  z-index: 10;
 }
 .t2-nd-vol-inline > svg {
   width: 22px;
 }
+/* 进度条上方的一行工具：倍速 | 音量 | 收藏，水平居中 */
+.t2-nd-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  height: 30px;
+}
+.t2-nd-tools .t2-nd-ctrl {
+  margin: 0;
+}
 
-/* 点开后向上弹出的竖直音量条 */
+/* 音量点开后向**右**展开的横向滑条（音量在行尾，右边是空的，直接往右弹） */
 .t2-nd-vol-pop {
   position: absolute;
-  left: 50%;
-  bottom: 30px;
-  transform: translateX(-50%);
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 4px;
-  padding: 8px 0 6px;
-  width: 44px;
-  border-radius: 12px;
-  border: 1px solid rgba(127, 214, 255, .3);
-  background: rgba(14, 20, 26, .94);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+  gap: 6px;
+  padding: 6px 10px;
+  width: max-content;
+  border-radius: 999px;
+  border: 1px solid rgba(22, 50, 63, .14);
+  background: rgba(255, 255, 255, .97);
+  box-shadow: 0 10px 26px rgba(22, 50, 63, .18);
   z-index: 10;
 }
 .t2-nd-vol-pop[hidden] {
   display: none;
 }
-/* rotate 是绕自身中心转的，输入框布局宽度仍是 92px，
-   所以必须绝对定位 + translate(-50%,-50%)，让旋转后的盒子正好落在 22×92 的容器里 */
-.t2-nd-vol-wrap {
-  position: relative;
-  width: 22px;
-  height: 92px;
-  flex: none;
-}
-.t2-nd-vol-wrap input[type="range"] {
-  position: absolute;
-  left: 50%;
-  top: 50%;
+.t2-nd-vol-range {
   width: 92px;
   height: 22px;
   margin: 0;
-  accent-color: #7fd6ff;
+  accent-color: #2f9ed1;
   cursor: pointer;
-  transform: translate(-50%, -50%) rotate(-90deg);
 }
-/* 滑条下方的小喇叭：点它静音/取消，跟滑条同一列，不另起按钮 */
+/* 滑条右边的小喇叭：点它静音/取消 */
 .t2-nd-vol-mute {
   display: grid;
   place-items: center;
@@ -120,34 +160,122 @@ body {
   padding: 0;
   border: 0;
   background: none;
-  color: #cfeaff;
+  color: #16323f;
   opacity: .72;
   cursor: pointer;
 }
 .t2-nd-vol-mute:hover {
   opacity: 1;
 }
-/* ---------------- 返回资料库 ---------------- */
-.t2-nd-back {
+html[data-theme="dark"] .t2-nd-vol-pop {
+  border-color: rgba(127, 214, 255, .3);
+  background: rgba(32, 48, 58, .96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+}
+html[data-theme="dark"] .t2-nd-vol-range {
+  accent-color: #7fd6ff;
+}
+html[data-theme="dark"] .t2-nd-vol-mute {
+  color: #cfeaff;
+}
+
+/* ---------------- 右上角：返回资料库 ---------------- */
+.t2-nd-top {
   position: fixed;
-  left: 12px;
   top: 12px;
+  right: 12px;
   z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.t2-nd-back {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   height: 34px;
   padding: 0 14px;
   border-radius: 999px;
-  border: 1px solid rgba(127, 214, 255, .28);
-  background: rgba(14, 20, 26, .72);
-  color: #cfeaff !important;
+  border: 1px solid rgba(22, 50, 63, .12);
+  background: rgba(255, 255, 255, .8);
+  color: #16323f !important;
   font: 600 13px/1 system-ui, -apple-system, sans-serif;
   text-decoration: none !important;
   backdrop-filter: blur(6px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  box-shadow: 0 6px 18px rgba(22, 50, 63, .12);
 }
 .t2-nd-back:hover {
+  background: #fff;
+  border-color: rgba(22, 50, 63, .22);
+}
+html[data-theme="dark"] .t2-nd-back {
+  border-color: rgba(127, 214, 255, .28);
+  background: rgba(32, 48, 58, .82);
+  color: #cfeaff !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+html[data-theme="dark"] .t2-nd-back:hover {
   background: rgba(22, 32, 40, .92);
+  border-color: rgba(127, 214, 255, .5);
+}
+
+/* 底部两个图标往两边散开一点，别全挤在中间 */
+.react-jinke-music-player-mobile-operation .items {
+  justify-content: space-between;
+  padding: 0 7%;
+}
+.react-jinke-music-player-mobile-operation .items .item {
+  flex: 0 0 auto;
+}
+
+/* 进度条：Navi 自带 ~45px 上边距（JSS 会盖掉普通声明），用 vh 让
+   工具行/进度条/播放行在黑胶下方的空间里均匀摊开 */
+.react-jinke-music-player-mobile-progress {
+  margin-top: 0 !important;
+}
+.t2-nd-tools {
+  margin-top: 0;
+}
+/* 根因：Navi 播放器是纵向 flex，子元素带 flex-grow，把标题行/歌手行撑出一大截
+   空白（height 会被 flex 分配覆盖，设了也白设）。全部改为不伸缩，各回自然高度 */
+.react-jinke-music-player-mobile > * {
+  flex: 0 0 auto !important;
+}
+.react-jinke-music-player-mobile-header {
+  overflow: visible;
+}
+.react-jinke-music-player-mobile-switch {
+  display: none !important;
+}
+/* 从转盘到工具行到进度条整块上移：负 margin 一起带走在它下面的
+   工具行和进度条（Navi 的 JSS 会用同优先级 margin:0 盖掉普通声明，
+   必须带 !important 才压得住） */
+.react-jinke-music-player-mobile-cover {
+  margin-top: 0 !important;
+}
+.react-jinke-music-player-mobile-singer {
+  margin-top: 0 !important;
+}
+/* 底部播放模式/播放列表两个角标钉死在底边（原本在文档流里，
+   会被下面播放行的位移一起推走，永远对不齐） */
+.react-jinke-music-player-mobile-operation {
+  left: 0;
+  right: 0;
+}
+/* 播放器容器锁死为整屏高并裁掉内部溢出：容器若是随内容长高，
+   钉在它底部的角标行会被带到视口之外；锁死后角标永远贴底 */
+.react-jinke-music-player-mobile {
+  height: 100vh;
+  overflow: hidden;
+  /* Navi 默认 space-between 会自动瓜分剩余空间，margin 怎么调都被它
+     重新分配——关掉，下面的间距才真正可控 */
+  justify-content: space-between !important;
+}
+/* ±15s + 播放键那一行钉在底部：播放键圆心与角标行同一水平线。
+   绝对定位 + 负 bottom，摆脱文档流——之前用 margin 硬推，数值和
+   Navi 内部布局互相耦合，怎么调都飘 */
+.react-jinke-music-player-mobile-toggle {
+  margin-top: 0;
 }
 
 /* ---------------- 宠物 gif（可拖动） ---------------- */
@@ -169,6 +297,28 @@ body {
 .t2-nd-pet.dragging {
   cursor: grabbing;
   filter: drop-shadow(0 12px 26px rgba(0, 0, 0, .55));
+}
+/* 宠物右上角的关闭按钮：平时半透明，悬停变实心 */
+.t2-nd-pet-close {
+  position: fixed;
+  z-index: 2147483001;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font: 600 14px/22px system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: center;
+  cursor: pointer;
+  opacity: .45;
+  transition: opacity .15s, background .15s;
+}
+.t2-nd-pet-close:hover,
+.t2-nd-pet-close:focus-visible {
+  opacity: 1;
+  background: rgba(0, 0, 0, .85);
 }
 
 /* 播放条中间的圆（若 Navi 页面自带唱片位就用这套） */
@@ -276,4 +426,10 @@ body {
   .t2-nd-pet { width: 72px; height: 72px; bottom: 88px; }
   .t2-nd-skip { margin: 0 1px; padding: 0 3px; font-size: 11px; }
   .t2-nd-back { height: 32px; padding: 0 12px; font-size: 12px; }
+  .t2-nd-vol-range { width: 84px; }
+  /* 手机上工具行虽居中，音量右边余量不够，拉条改向左弹 */
+  .t2-nd-vol-pop {
+    left: auto;
+    right: calc(100% + 8px);
+  }
 }

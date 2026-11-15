@@ -401,7 +401,7 @@ async function pdf(box, blob, note) {
   const view = document.createElement('div');
   view.className = 't2-pdf';
   const meta = document.createElement('p');
-  meta.style.cssText = 'color:#c9ced6;font-size:12px;margin:0 0 10px';
+  meta.style.cssText = 'color:var(--v-sub);font-size:12px;margin:0 0 10px';
   meta.textContent = `共 ${doc.numPages} 页 · 滚动自动翻页`;
   view.appendChild(meta);
   box.appendChild(view);
@@ -540,19 +540,33 @@ async function word(box, blob, note) {
   if (!host.querySelector('.docx-wrapper')) note('这份 Word 没有解析出内容，建议下载后查看。');
 }
 
-/** 固定宽度（A4）的页面在手机上会横向溢出：整体缩放到容器宽度。 */
+/**
+ * 页面宽度与容器不一致时整体缩放：太宽会横向溢出就缩小（手机上的 A4），
+ * 太窄也放大铺满（有的文档页面尺寸设得小，docx-preview 照原样渲染就只有一小条）。
+ * 上限 3 倍，避免极端小页被拉得过分；DOM 缩放是矢量的，放大不糊。
+ */
 function fitWidth(host, inner) {
   if (!inner) return;
   const fit = () => {
     inner.style.zoom = '';
+    // host 是预览区网格里 shrink-to-fit 的居中项，自己的宽度跟着内容走，
+    // 量不出"可用宽度"；得量父容器（.t2-viewer-body）去掉内边距后的宽。
+    let have = host.clientWidth;
+    if (host.parentElement) {
+      const ps = getComputedStyle(host.parentElement);
+      have = host.parentElement.clientWidth - parseFloat(ps.paddingLeft || '0') - parseFloat(ps.paddingRight || '0');
+    }
     const need = inner.scrollWidth;
-    const have = host.clientWidth;
-    if (need > have && have > 0) inner.style.zoom = String(Math.max(0.3, have / need));
+    if (need > 0 && have > 0 && Math.abs(need - have) > 2) {
+      inner.style.zoom = String(Math.min(3, Math.max(0.3, have / need)));
+    }
   };
   fit();
   const ro = 'ResizeObserver' in window ? new ResizeObserver(fit) : null;
-  if (ro) ro.observe(host);
-  else window.addEventListener('resize', fit);
+  if (ro) {
+    // host 是收缩项，窗口变窄时它自己不一定会变；观察父容器（真正决定可用宽度的那个）。
+    ro.observe(host.parentElement || host);
+  } else window.addEventListener('resize', fit);
 }
 
 // ---------------------------------------------------------------- Excel / CSV（SheetJS）
@@ -565,7 +579,7 @@ async function sheet(box, blob, ext) {
     ext === 'csv' || ext === 'tsv'
       ? X.read(await new TextDecoder('utf-8').decode(await blob.arrayBuffer()), { type: 'string', sheetRows: 2001, FS: ext === 'tsv' ? '\t' : undefined })
       : X.read(await blob.arrayBuffer(), { type: 'array', sheetRows: 2001 });
-  box.innerHTML = `<div class="t2-sheet-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div><div class="t2-sheet"></div><p style="color:#c9ced6;font-size:12px;margin:8px 0 0">每个工作表最多显示前 2000 行</p>`;
+  box.innerHTML = `<div class="t2-sheet-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div><div class="t2-sheet"></div><p style="color:var(--v-sub);font-size:12px;margin:8px 0 0">每个工作表最多显示前 2000 行</p>`;
   const tabs = box.querySelector('.t2-sheet-tabs');
   const host = box.querySelector('.t2-sheet');
   const show = (i) => {
@@ -580,7 +594,7 @@ async function sheet(box, blob, ext) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 't2-btn';
-    b.style.cssText = 'color:#eee;background:#2f343b;border:1px solid #454b54';
+    b.style.cssText = 'color:var(--v-fg);background:var(--v-btn);border:1px solid var(--v-btn-line)';
     b.textContent = n;
     b.onclick = () => show(i);
     tabs.appendChild(b);

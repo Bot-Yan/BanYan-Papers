@@ -1,0 +1,10 @@
+{
+  "name": "treenext",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev": "node scripts/preview-local.mjs",
+    "preview": "node scripts/preview-local.mjs"
+  }
+}

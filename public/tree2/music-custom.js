@@ -1,7 +1,7 @@
 // tree2 × Navidrome 自定义外观 v5
 //   1) ±15s：固定浮层（不再依赖 Navi 的播放条 DOM）
 //   2) 左下角宠物 gif，可拖动，idle/load/play 三态
-//   3) 分享页中央自绘黑胶，播放时旋转
+//   3) 保留 Navidrome 分享页原有的封面和播放布局
 //   4) 分享页自动起播（用户一操作就交还控制权）
 //   5) 左上角「返回资料库」
 //
@@ -22,6 +22,9 @@
   // 桌宠可选：往 /assets/ 放一个 pet.gif 就会出现（可拖动），不放就完全没有、零流量。
   // 原来默认带的三个绝区零动图共 3.7 MB，已删。
   var PET_GIF = ASSET + 'pet.gif';
+  // 点过桌宠右上角的 × 之后记在这里，之后就不再挂载；想恢复：控制台执行
+  // localStorage.removeItem('t2PetOff') 再刷新。
+  var PET_OFF_KEY = 't2PetOff';
   var IS_MUSIC = location.pathname.indexOf('/music/') === 0;
   var IS_SHARE = location.pathname.indexOf('/share/') !== -1;
 
@@ -105,12 +108,11 @@
   /* ---------------- 统一刷新视觉 ---------------- */
 
   var pet = null;
-  var vinyl = null;
+  var petClose = null;
 
   function paint() {
     var on = isPlaying();
     setPet(on ? 'play' : 'idle');
-    if (vinyl) vinyl.classList.toggle('is-playing', on);
     var discs = document.querySelectorAll('.t2-nd-disc');
     for (var i = 0; i < discs.length; i++) discs[i].classList.toggle('is-playing', on);
   }
@@ -168,12 +170,78 @@
           play.parentElement.insertBefore(plus, play.nextSibling);
         }
       }
-      // 音量图标接在 +15s 后面，同一行、同一种结构
-      if (plus && plus.parentElement && !document.querySelector('.t2-nd-vol-inline')) {
-        plus.parentElement.insertBefore(makeVolSpan(), plus.nextSibling);
-      }
+      // 音量 + 倍速 + 收藏不塞这行：它们有自己的一行，放进度条上面（mountToolsRow）
     }
     alignSkips();
+  }
+
+  /* ---------------- 倍速 | 音量 | 收藏：进度条上方的一行 ---------------- */
+
+  /** 收藏键只对本地文件显示：local-<sha256>.<ext> 能还原出 tree2 的存储键 */
+  function favKeyFromLocation() {
+    var m = /\/music\/share\/([^/?#]+)/.exec(location.pathname);
+    var id = m && decodeURIComponent(m[1]);
+    var mm = id && /^local-([0-9a-f]{64})(\.[a-z0-9]{1,8})$/i.exec(id);
+    return mm ? mm[1].slice(0, 2) + '/' + mm[1] + mm[2] : null;
+  }
+  function favHas(k) {
+    try {
+      return (JSON.parse(localStorage.getItem('tree2.fav') || '[]')).indexOf(k) !== -1;
+    } catch (e) { return false; }
+  }
+  function favToggle(k) {
+    var arr = [];
+    try { arr = JSON.parse(localStorage.getItem('tree2.fav') || '[]'); } catch (e) {}
+    var i = arr.indexOf(k);
+    if (i === -1) arr.push(k);
+    else arr.splice(i, 1);
+    try { localStorage.setItem('tree2.fav', JSON.stringify(arr)); } catch (e) {}
+    return i === -1;
+  }
+
+  /** 收藏：五角星（跟资料库里的 ★/☆ 同款语义），实心=已收藏；共用同一个 localStorage */
+  function makeFavSpan() {
+    var k = favKeyFromLocation();
+    if (!k) return null;
+    var s = document.createElement('span');
+    s.className = 'group t2-nd-ctrl t2-nd-fav';
+    s.dataset.k = k;
+    s.setAttribute('role', 'button');
+    s.setAttribute('aria-label', '收藏');
+    var paint = function (on) {
+      s.title = on ? '已收藏，点按取消' : '收藏到本浏览器';
+      s.querySelector('.t2-nd-fav-path').setAttribute('fill', on ? '#e8a838' : 'none');
+    };
+    s.innerHTML =
+      '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path class="t2-nd-fav-path" ' +
+      'd="M12 2.8l2.8 5.6 6.2.9-4.5 4.4 1.1 6.2L12 17l-5.6 2.9 1.1-6.2-4.5-4.4 6.2-.9z" ' +
+      'stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>' +
+      '</svg>';
+    paint(favHas(k));
+    s.addEventListener('click', function (e) {
+      e.stopPropagation();
+      paint(favToggle(s.dataset.k));
+    });
+    return s;
+  }
+
+  /**
+   * 收藏 | 倍速 | 音量 一行，插在进度条上面。
+   * 播放条就只剩 ±15s 和播放键，天然居中，不用再垫配重。
+   */
+  function mountToolsRow() {
+    var progress = document.querySelector('.react-jinke-music-player-mobile-progress');
+    if (!progress || document.querySelector('.t2-nd-tools')) return;
+    var row = document.createElement('div');
+    row.className = 't2-nd-tools';
+    var fav = makeFavSpan();
+    var rate = makeRateSpan();
+    var vol = makeVolSpan();
+    if (fav) row.appendChild(fav);
+    if (rate) row.appendChild(rate);
+    if (vol) row.appendChild(vol);
+    progress.parentElement.insertBefore(row, progress);
   }
 
   /**
@@ -183,7 +251,10 @@
    * 差值写成行内 transform，优先级最高，不受 Navi 样式影响。
    */
   function alignSkips() {
-    var skips = document.querySelectorAll('.t2-nd-ctrl');
+    // 只对齐播放条里的 ±15s（.t2-nd-skip）。倍速/音量/收藏另有自己的一行，
+    // 不参与这套对齐——之前用 .t2-nd-ctrl 全量匹配，把它们拉去跟播放条
+    // 图标对齐，表现成"图标飞出几百像素、每秒重算着飘"。
+    var skips = document.querySelectorAll('.t2-nd-skip');
     if (!skips.length) return;
     var refSvg =
       document.querySelector('.prev-audio svg') ||
@@ -354,7 +425,7 @@
     if (wave) wave.style.display = volValue > 0.001 ? '' : 'none';
   }
 
-  /** 构造音量图标（同 ±15s 一样是 span.group > svg），点开弹出竖直滑条 */
+  /** 音量：小喇叭图标，点开向右弹出横向滑条 */
   function makeVolSpan() {
     var s = document.createElement('span');
     s.className = 'group t2-nd-ctrl t2-nd-vol-inline';
@@ -367,7 +438,7 @@
       'stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/>' +
       '</svg>' +
       '<div class="t2-nd-vol-pop" hidden>' +
-      '<div class="t2-nd-vol-wrap"><input class="t2-nd-vol-range" type="range" min="0" max="1" step="0.01" aria-label="音量"></div>' +
+      '<input class="t2-nd-vol-range" type="range" min="0" max="1" step="0.01" aria-label="音量">' +
       '<button type="button" class="t2-nd-vol-mute" aria-label="静音">' +
       '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
       '<path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/>' +
@@ -403,15 +474,20 @@
   }
 
     /* ---------------- 倍速（听力练习刚需） ----------------
-       目标值存 localStorage，play 钩子对新元素自动套用；
-       每 800ms 把所有媒体元素的倍速对齐一次（Howler 换轨也不怕）。 */
-    var t2Rate = parseFloat(localStorage.getItem('t2Rate')) || 1;
+       目标值存 localStorage，每 800ms 把所有媒体元素的倍速对齐一次
+       （Howler 换轨或新元素出现也能跟上）。 */
+    var t2Rate = 1;
+    try { t2Rate = parseFloat(localStorage.getItem('t2Rate')) || 1; } catch (e) {}
     window.__t2Rate = t2Rate;
-    var t2Media = [];
+    function applyRateToMedia(media) {
+      if (media && media.playbackRate !== t2Rate) {
+        try { media.playbackRate = t2Rate; } catch (e) {}
+      }
+    }
     function t2ApplyRate() {
       window.__t2Rate = t2Rate;
-      t2Media.forEach(function (m) { try { m.playbackRate = t2Rate; } catch (e) {} });
-      document.querySelectorAll('audio, video').forEach(function (m) { try { m.playbackRate = t2Rate; } catch (e) {} });
+      applyRateToMedia(lastAudio);
+      document.querySelectorAll('audio, video').forEach(applyRateToMedia);
     }
     setInterval(t2ApplyRate, 800);
     function t2CycleRate() {
@@ -419,41 +495,53 @@
       t2Rate = steps[(steps.indexOf(t2Rate) + 1) % steps.length];
       try { localStorage.setItem('t2Rate', String(t2Rate)); } catch (e) {}
       t2ApplyRate();
-      var btn = document.getElementById('t2-rate-pill');
-      if (btn) {
-        btn.textContent = t2Rate + 'x';
-        btn.title = '当前倍速 ' + t2Rate + 'x，点按切换';
-      }
+      var label = document.getElementById('t2-rate-label');
+      if (label) label.textContent = t2Rate + 'x';
+      var span = document.querySelector('.t2-nd-rate');
+      if (span) span.title = '当前倍速 ' + t2Rate + 'x，点按切换';
     }
-    function mountRatePill() {
-      if (!IS_MUSIC || document.getElementById('t2-rate-pill')) return;
-      var b = document.createElement('button');
-      b.id = 't2-rate-pill';
-      b.type = 'button';
-      b.textContent = t2Rate + 'x';
-      b.title = '听力倍速：点按切换（0.75/1/1.25/1.5/2）';
-      b.style.cssText = 'position:fixed;left:12px;top:52px;z-index:2147483000;padding:6px 12px;border-radius:999px;' +
-        'border:1px solid rgba(255,255,255,.35);background:rgba(20,30,40,.72);color:#fff;font:600 12.5px/1 system-ui,sans-serif;cursor:pointer';
-      b.addEventListener("click", t2CycleRate);
-      document.body.appendChild(b);
+
+    /** 倍速：跟 ±15s 同款的 span>svg 文字控件，点一下换下一档 */
+    function makeRateSpan() {
+      var s = document.createElement('span');
+      s.className = 'group t2-nd-ctrl t2-nd-rate';
+      s.title = '听力倍速：点按切换（0.75/1/1.25/1.5/2）';
+      s.setAttribute('aria-label', '播放倍速');
+      s.innerHTML =
+        '<svg width="34" height="22" viewBox="0 0 34 22" aria-hidden="true" focusable="false">' +
+        '<text id="t2-rate-label" x="17" y="15" text-anchor="middle" font-size="12" font-weight="700" ' +
+        'font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="currentColor" letter-spacing="-0.3">' +
+        t2Rate +
+        'x</text></svg>';
+      s.addEventListener('click', function (e) {
+        e.stopPropagation();
+        t2CycleRate();
+      });
+      return s;
     }
-    var _t2OrigPlay = proto.play;
-    proto.play = function () {
-      if (t2Media.indexOf(this) < 0) t2Media.push(this);
-      return _t2OrigPlay.apply(this, arguments);
-    };
 
   /* ---------------- 返回资料库 ---------------- */
+
+  // 右上角统一放倍速和返回，避免一个在左上、一个在左下的割裂感
+  function topBar() {
+    var bar = document.querySelector('.t2-nd-top');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 't2-nd-top';
+      document.body.appendChild(bar);
+    }
+    return bar;
+  }
 
   function mountBack() {
     if (!IS_MUSIC) return;
     if (document.querySelector('.t2-nd-back')) return;
     var a = document.createElement('a');
     a.className = 't2-nd-back';
-    a.href = '/';
+    a.href = location.pathname.indexOf('/music/share/local-') === 0 ? '/tree2/index.html?api=reset' : '/';
     a.textContent = '\u2190 \u8d44\u6599\u5e93';
     a.setAttribute('aria-label', '返回资料库');
-    document.body.appendChild(a);
+    topBar().appendChild(a);
   }
 
   /* ---------------- 宠物 gif（可拖动） ---------------- */
@@ -472,8 +560,39 @@
     } catch (e) {}
   }
 
+  function petOff() {
+    try {
+      return localStorage.getItem(PET_OFF_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function removePet() {
+    if (pet && pet.parentNode) pet.parentNode.removeChild(pet);
+    if (petClose && petClose.parentNode) petClose.parentNode.removeChild(petClose);
+    pet = null;
+    petClose = null;
+  }
+
+  // 关闭按钮跟着宠物走（宠物可拖动）
+  function placeClose() {
+    if (!pet || !petClose) return;
+    var r = pet.getBoundingClientRect();
+    petClose.style.left = r.left + r.width - 14 + 'px';
+    petClose.style.top = r.top - 6 + 'px';
+  }
+
+  function hidePet() {
+    try {
+      localStorage.setItem(PET_OFF_KEY, '1');
+    } catch (e) {}
+    removePet();
+  }
+
   function mountPet() {
     if (pet || !document.body || !IS_MUSIC) return;
+    if (petOff()) return;
     // 素材优先级：assets/pet.gif（自传的动图）> facivon.svg（页面自带的 1.6KB 图标，零额外流量）。
     // 以前默认带的三个绝区零动图共 3.7 MB，已删。
     var probe = new Image();
@@ -484,6 +603,7 @@
 
   function mountPetImg(src) {
     if (pet || !document.body) return;
+    if (petOff()) return;
     pet = document.createElement('img');
     pet.className = 't2-nd-pet';
     pet.alt = '';
@@ -494,6 +614,20 @@
     pet.style.left = p.left + 'px';
     pet.style.bottom = p.bottom + 'px';
     makeDraggable(pet);
+
+    petClose = document.createElement('button');
+    petClose.type = 'button';
+    petClose.className = 't2-nd-pet-close';
+    petClose.textContent = '\u00d7';
+    petClose.title = '\u9690\u85cf\u684c\u5ba0';
+    petClose.setAttribute('aria-label', '\u9690\u85cf\u684c\u5ba0');
+    petClose.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      hidePet();
+    });
+    document.body.appendChild(petClose);
+    placeClose();
   }
 
   function makeDraggable(el) {
@@ -521,6 +655,7 @@
       bottom = Math.max(4, Math.min(window.innerHeight - el.offsetHeight - 4, bottom));
       el.style.left = left + 'px';
       el.style.bottom = bottom + 'px';
+      placeClose();
     });
     function end(e) {
       if (!dragging) return;
@@ -537,31 +672,6 @@
   function setPet(name) {
     if (!pet) return;
     pet.dataset.state = name; // 静态图没有分状态动图，src 由 mountPetImg 决定
-  }
-
-  /* ---------------- 黑胶（分享页中央） ---------------- */
-
-  function mountVinyl() {
-    if (vinyl || !document.body || !IS_SHARE) return;
-    vinyl = document.createElement('div');
-    vinyl.className = 't2-nd-vinyl';
-    vinyl.setAttribute('aria-hidden', 'true');
-    var disc = document.createElement('div');
-    disc.className = 't2-nd-vinyl-disc';
-    var label = document.createElement('div');
-    label.className = 't2-nd-vinyl-label';
-    var img = document.createElement('img');
-    img.src = FAVICON;
-    img.alt = '';
-    img.draggable = false;
-    label.appendChild(img);
-    var hole = document.createElement('div');
-    hole.className = 't2-nd-vinyl-hole';
-    disc.appendChild(label);
-    disc.appendChild(hole);
-    vinyl.appendChild(disc);
-    document.body.appendChild(vinyl);
-    paint();
   }
 
   /* ---------------- 分享页自动起播 ---------------- */
@@ -603,29 +713,37 @@
 
   /* ---------------- 启动 ---------------- */
 
+  /**
+   * 主题跟 tree2 站内的亮/暗开关走：读同一个 localStorage（tree2.pref.theme），
+   * 不看系统偏好。站里切换时这里靠 storage 事件实时跟上。
+   */
+  function applyTheme() {
+    var dark = false;
+    try {
+      dark = JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark';
+    } catch (e) {}
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  }
+
   function boot() {
-      if (IS_MUSIC) mountRatePill();
+    applyTheme();
     mountBack();
     integrateSkip();
+    mountToolsRow();
     mountPet();
-    mountVinyl();
     autoPlayOnShare();
     paint();
     volValue = readVol();
-    // 点空白处收起音量滑条
-    document.addEventListener('click', function () {
-      var p = document.querySelector('.t2-nd-vol-pop');
-      if (p) p.hidden = true;
-    });
     // 探测结构：播放条通常是异步渲染的，2s / 6s 各看一次
     setTimeout(probe, 2000);
     setTimeout(probe, 6000);
+    window.addEventListener('resize', placeClose);
     // 兜底轮询：Navi 的播放条可能晚于脚本渲染，宠物/黑胶也可能被 React 重渲染冲掉
     setInterval(function () {
       mountBack();
       integrateSkip();
+      mountToolsRow();
       mountPet();
-      mountVinyl();
       paint();
       // Howler 换曲时会重置元素音量，这里持续把用户设定的音量压回去
       var a = audioEl();
@@ -646,6 +764,11 @@
     if (e.key === 'ArrowRight') seek(STEP);
   });
 
+  // 站内点了亮/暗切换，这边实时跟（同源共享 localStorage，storage 事件即通知）
+  window.addEventListener('storage', function (e) {
+    if (!e.key || e.key === 'tree2.pref') applyTheme();
+  });
+
   // 调试口：控制台执行 window.__t2Debug()
   window.__t2Debug = function () {
     var a = audioEl();
@@ -660,8 +783,7 @@
       playingFlag: playing,
       isPlaying: isPlaying(),
       pet: !!pet,
-      vinyl: !!vinyl,
-      vinylSpinning: vinyl ? vinyl.classList.contains('is-playing') : null,
+      petOff: petOff(),
       skipInline: !!document.querySelector('.t2-nd-skip'),
       backBtn: !!document.querySelector('.t2-nd-back'),
       foundPrev: prev ? prev.tagName + '.' + String(prev.className).slice(0, 30) : null,
