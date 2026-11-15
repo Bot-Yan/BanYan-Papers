@@ -45,6 +45,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ArrangeError, planArrangement } from './tree2-arrange.mjs';
+import { assignFolderIds, folderIndex, historicalFolderId, isFolderId, newFolder, rememberFolderChanges, removedFolder } from './tree2-folders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -887,29 +888,31 @@ route('GET', /^\/s\/([A-Za-z0-9]{4,64})$/, async (req, res, [, id]) => {
   });
 });
 
-// 确定性文件夹分享：/d/<届>/<批次/子目录…> —— 同一个文件夹所有人同一个链接。
-// 落地页列出子文件夹（可继续点进去）与全部文件（预览/下载）。
+// 新分享使用稳定目录 ID。历史路径仍可打开原目录。
 const countNodeFiles = countTreeFiles;
 const sumNodeBytes = sumTreeBytes;
+const encodedFolderPath = segs => segs.map(s => encodeURIComponent(s)).join('/');
+const folderIdLink = (year, id) => `/d/id/${year}/${id}`;
+const folderLink = (year, node, segs) => isFolderId(node?.folderId)
+  ? folderIdLink(year, node.folderId)
+  : `/d/${year}/${encodedFolderPath(segs)}`;
 
-function sendFolderLanding(req, res, { year, segs, node, batch }) {
-  const enc = (segs2) => segs2.map((s) => encodeURIComponent(s)).join('/');
-  const childLink = (childSegs) => `/d/${encodeURIComponent(year)}/${enc(childSegs)}`;
-  const zipUrl = `/api/tree2/zip/${encodeURIComponent(year)}/${enc(segs)}`;
+function sendFolderLanding(req, res, { year, segs, node, batch, ancestors = [] }) {
+  const zipUrl = `/api/tree2/zip/${year}/${encodedFolderPath(segs)}`;
   const dirs = (node.c || []).filter((c) => c.t === 'd');
   const files = (node.c || []).filter((c) => c.t === 'f');
 
   // 面包屑：每一段都能点回上一层
   const crumb = segs
-    .map((s, i) => (i === segs.length - 1 ? escHtml(s) : `<a href="${escHtml(childLink(segs.slice(0, i + 1)))}">${escHtml(s)}</a>`))
+    .map((s, i) => (i === segs.length - 1 ? escHtml(s) : `<a href="${escHtml(folderLink(year, ancestors[i], segs.slice(0, i + 1)))}">${escHtml(s)}</a>`))
     .join(' <span style="color:#c9bda6">/</span> ');
 
   const rows = [
     ...dirs.map((d) => {
-      const segs2 = [...segs, d.n];
+      const link = escHtml(folderLink(year, d, [...segs, d.n]));
       const nFiles = countNodeFiles(d);
-      return `<li><span class="ico">📁</span><span class="f-name"><a href="${escHtml(childLink(segs2))}">${escHtml(d.n)}</a></span>` +
-        `<span class="f-size">${nFiles} 个文件</span><span class="f-act"><a href="${escHtml(childLink(segs2))}">打开</a></span></li>`;
+      return `<li><span class="ico">📁</span><span class="f-name"><a href="${link}">${escHtml(d.n)}</a></span>` +
+        `<span class="f-size">${nFiles} 个文件</span><span class="f-act"><a href="${link}">打开</a></span></li>`;
     }),
     ...files.map((f) => {
       const filesUrl = `/api/tree2/files/${encodeURIComponent(year)}?k=${encodeURIComponent(f.k)}&n=${encodeURIComponent(f.n)}`;
@@ -943,6 +946,32 @@ function sendFolderLanding(req, res, { year, segs, node, batch }) {
   res.end(html);
 }
 
+function sendMissingFolder(req, res, year, removed) {
+  res.writeHead(removed ? 410 : 404, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  if (!removed) return res.end(SHARE_404_HTML);
+  const parent = removed.parent;
+  const next = parent
+    ? `<a class="down" href="${escHtml(folderLink(year, parent.node, parent.segs))}">打开上级目录</a>`
+    : '<a class="down" href="/">返回资料库</a>';
+  res.end(`<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>原目录已移除</title>
+<style>${SHARE_PAGE_CSS}</style><main><div class="card"><h1>原目录已移除</h1>${next}</div></main></html>`);
+}
+
+route('GET', /^\/d\/id\/(\d{4})\/([^/]+)$/, async (req, res, [, year, id]) => {
+  requireRead(req);
+  if (!isFolderId(id)) return sendMissingFolder(req, res, year);
+  const manifest = await readManifestFile(year).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!manifest) return sendMissingFolder(req, res, year);
+  const current = folderIndex(manifest);
+  const found = current.get(id);
+  if (!found) return sendMissingFolder(req, res, year, removedFolder(manifest, id, current));
+  return sendFolderLanding(req, res, { year, ...found });
+});
+
 route('GET', /^\/d\/([^/]+)\/(.+)$/, async (req, res, m) => {
   requireRead(req);
   const year = safeYear(decodeURIComponent(m[1]));
@@ -952,22 +981,21 @@ route('GET', /^\/d\/([^/]+)\/(.+)$/, async (req, res, m) => {
   } catch {
     throw new HttpError(400, '路径不合法');
   }
-  if (!segs.length || segs.some((s) => !s || s === '.' || s === '..' || /[\\]/.test(s))) {
-    res.writeHead(404, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(SHARE_404_HTML);
+  if (!segs.length || segs.some(s => s === '.' || s === '..' || s.includes('\\'))) {
+    return sendMissingFolder(req, res, year);
   }
-  const found = await findManifestFolder(year, segs);
-  if (!found) {
-    res.writeHead(404, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(SHARE_404_HTML);
-  }
-  const { node, batch } = found;
-  // 碰到的是文件 → 跳到对应文件分享页
-  if (node.t === 'f') {
-    res.writeHead(302, { ...cors(req), Location: `/s/${encodeURIComponent(node.k)}`, 'Cache-Control': 'no-store' });
+  const manifest = await readManifestFile(year).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!manifest) return sendMissingFolder(req, res, year);
+  const historicalId = historicalFolderId(manifest, segs);
+  if (historicalId) {
+    res.writeHead(302, { ...cors(req), Location: folderIdLink(year, historicalId), 'Cache-Control': 'no-store' });
     return res.end();
   }
-  return sendFolderLanding(req, res, { year, segs, node, batch });
+  const found = findManifestFolder(manifest, segs);
+  return found ? sendFolderLanding(req, res, { year, segs, ...found }) : sendMissingFolder(req, res, year);
 });
 
 // ---------------- 文件夹打包下载（STORE zip，零依赖流式） ----------------
@@ -1012,16 +1040,17 @@ const zipDosTime = (d) => ({
 });
 
 // /d/ 与 zip 两条路由共用的「按路径找清单节点」
-async function findManifestFolder(year, segs) {
-  const manifest = await readManifestFile(year).catch(() => null);
+function findManifestFolder(manifest, segs) {
   const batch = manifest && (manifest.batches || []).find((b) => b.name === segs[0]);
   if (!batch) return null;
   let node = batch.tree;
+  const ancestors = [];
   for (const s of segs.slice(1)) {
+    ancestors.push(node);
     node = (node.c || []).find((c) => c.t === 'd' && c.n === s);
     if (!node) return null;
   }
-  return { node, batch };
+  return { node, batch, ancestors };
 }
 
 route('GET', /^\/api\/tree2\/zip\/([^/]+)\/(.+)$/, async (req, res, m) => {
@@ -1033,7 +1062,7 @@ route('GET', /^\/api\/tree2\/zip\/([^/]+)\/(.+)$/, async (req, res, m) => {
   } catch {
     throw new HttpError(400, '路径不合法');
   }
-  const found = await findManifestFolder(year, segs);
+  const found = findManifestFolder(await readManifestFile(year).catch(() => null), segs);
   if (!found) throw new HttpError(404, '文件夹不存在或已移除');
   const { node, batch } = found;
 
@@ -1199,6 +1228,8 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
     if (!batch) throw new HttpError(404, '批次不存在');
 
+    if (!name) assignFolderIds(manifest);
+    const before = name ? null : folderIndex(manifest);
     let parentNode = null;
     let node = batch.tree;
     for (const s2 of segs.slice(1)) {
@@ -1229,7 +1260,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     } else if (parentNode) {
       removedFiles = countTreeFiles(node);
       removedKeys = collectKeys(node);
-      parentNode.c = (parentNode.c || []).filter((c) => c.n !== segs[segs.length - 1]);
+      parentNode.c = (parentNode.c || []).filter(c => c !== node);
       removedName = segs[segs.length - 1];
     } else {
       removedFiles = countTreeFiles(node);
@@ -1238,6 +1269,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
       removedName = segs[0];
     }
 
+    if (before) rememberFolderChanges(manifest, before);
     // 重新统计
     recalcManifestStats(manifest);
 
@@ -1322,6 +1354,8 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
     const batch = (manifest.batches || []).find((b) => b.name === segs[0]);
     if (!batch) throw new HttpError(404, '批次不存在');
 
+    if (!name) assignFolderIds(manifest);
+    const before = name ? null : folderIndex(manifest);
     let renamed = '';
     if (name) {
       // 文件重命名：扩展名不能变（存储键 = sha256+扩展名，改了就对不上对象）
@@ -1372,6 +1406,7 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
       renamed = 'batch';
     }
 
+    if (before) rememberFolderChanges(manifest, before);
     // 重新统计（与 remove 同款；此前漏了 totals，首页合计会停在旧数字）
     recalcManifestStats(manifest);
 
@@ -1407,7 +1442,11 @@ route('POST', /^\/api\/tree2\/arrange$/, async (req, res) => {
       plan = planArrangement(manifest, operation);
       if (revision !== undefined) {
         if (revision !== plan.summary.revision) throw new HttpError(409, '清单已更新，请重新预览');
+        assignFolderIds(manifest);
+        const before = folderIndex(manifest);
         plan.apply();
+        assignFolderIds(manifest);
+        rememberFolderChanges(manifest, before);
       }
     } catch (error) {
       if (error instanceof ArrangeError) throw new HttpError(error.status, error.message);
@@ -1452,9 +1491,13 @@ route('POST', /^\/api\/tree2\/batch$/, async (req, res) => {
 route('GET', /^\/api\/tree2\/ctoken$/, async (req, res) => {
   requireWrite(req);
   const list = await loadCTokens();
+  const available = list.length ? await listTokenBatches() : [];
   json(res, 200, {
     daily: dailyToken(todayCN()),
-    tokens: list.map((r) => ({ id: r.id, token: r.token, batches: r.batches, batchYear: r.batchYear, maxUses: r.maxUses || null, uses: r.uses || 0, expiresAt: r.expiresAt || null, createdAt: r.createdAt })),
+    tokens: list.map(r => ({
+      id: r.id, token: r.token, ...tokenScope(r, available),
+      maxUses: r.maxUses || null, uses: r.uses || 0, expiresAt: r.expiresAt || null, createdAt: r.createdAt,
+    })),
   });
 });
 
@@ -1467,7 +1510,7 @@ route('POST', /^\/api\/tree2\/ctoken$/, async (req, res) => {
   const ttlHours = optionalPositiveInteger(body.ttlHours, 8760, '有效期');
   return writeLibrary(async () => {
     const available = await listTokenBatches();
-    const batchYear = requested.map(batch => {
+    const selected = requested.map(batch => {
       const name = typeof batch === 'string' ? batch : batch?.name;
       if (typeof name !== 'string' || !name.trim() || name.length > 120) throw new HttpError(400, '批次名不合法');
       const year = typeof batch === 'string' ? null : safeYear(batch.year);
@@ -1475,11 +1518,12 @@ route('POST', /^\/api\/tree2\/ctoken$/, async (req, res) => {
       if (matches.length !== 1) throw new HttpError(400, '批次不存在或有同名批次，请按届别指定');
       return matches[0];
     });
-    if (new Set(batchYear.map(({ year, name }) => `${year}/${name}`)).size !== batchYear.length) throw new HttpError(400, '批次重复');
+    const batchIds = selected.map(({ id, year }) => ({ id, year }));
+    if (new Set(batchIds.map(({ id, year }) => `${year}/${id}`)).size !== batchIds.length) throw new HttpError(400, '批次重复');
     const rec = {
       id: randomBytes(6).toString('hex'),
       token: randomBytes(16).toString('hex'),
-      batches: [...new Set(batchYear.map(b => b.name))], batchYear, maxUses, uses: 0,
+      batchIds, maxUses, uses: 0,
       expiresAt: ttlHours ? Date.now() + ttlHours * 3600 * 1000 : null,
       createdAt: new Date().toISOString(),
     };
@@ -1507,10 +1551,12 @@ route('GET', /^\/api\/tree2\/ctoken-check$/, async (req, res, m, url) => {
   const rec = list.find((r) => r.token === t);
   if (rec) {
     checkTokenAvailability(rec);
-    const availableBatches = await listTokenBatches();
-    const batchYear = (rec.batchYear || []).filter(scope => availableBatches.some(b => b.year === scope.year && b.name === scope.name));
-    if (!batchYear.length) throw new HttpError(403, '口令的批次已不存在，请联系管理员');
-    return json(res, 200, { kind: 'once', batches: batchYear.map(b => b.name), batchYear, remaining: rec.maxUses ? rec.maxUses - (rec.uses || 0) : null, expiresAt: rec.expiresAt });
+    const scope = tokenScope(rec, await listTokenBatches());
+    if (!scope.batchYear.length) throw new HttpError(403, '口令的批次已不存在，请联系管理员');
+    return json(res, 200, {
+      kind: 'once', batches: scope.batchYear.map(b => b.name), batchYear: scope.batchYear,
+      remaining: rec.maxUses ? rec.maxUses - (rec.uses || 0) : null, expiresAt: rec.expiresAt,
+    });
   }
   if (t === dailyToken(todayCN())) return json(res, 200, { kind: 'daily', batches: null });
   return json(res, 404, { error: '口令无效' });
@@ -1628,8 +1674,8 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
         rec = tokens.find(row => row.id === auth.rec.id && row.token === auth.rec.token);
         if (!rec) throw new HttpError(403, '口令已被吊销');
         checkTokenAvailability(rec);
-        const allowed = rec.batchYear || [];
-        const batches = (manifest?.batches || []).filter(b => allowed.some(scope => scope.year === year && scope.name === b.name));
+        const allowed = new Set(authorizedBatches(rec, manifestBatches(manifest, year)).map(b => b.id));
+        const batches = (manifest?.batches || []).filter(b => allowed.has(b.tree?.folderId));
         if (!batches.some(b => b.name === folder[0])) throw new HttpError(403, '该口令不适用于目标届别或批次');
         if (!tmpOut && !batches.some(b => treeHasKey(b.tree, key))) {
           throw new HttpError(409, '秒传受限：该内容不在你可用批次的清单里，请按分片上传', 'quick_upload_failed');
@@ -1701,7 +1747,7 @@ function newBatch(name) {
     name, stage: t2StageOf(name), type: t2TypeOf(name),
     date: (/(\d{4}[.\-年]\d{1,2})/.exec(name) || [, ''])[1],
     files: 0, dirs: 0, bytes: 0, subj: [],
-    tree: { n: name, t: 'd', c: [] },
+    tree: newFolder(name),
   };
 }
 
@@ -1720,7 +1766,7 @@ async function attachToManifest(year, m, key, body, actor = '') {
   for (const segment of segs.slice(1)) {
     let sub = (parent.c || []).find(c => c.t === 'd' && c.n === segment);
     if (!sub) {
-      sub = { n: segment, t: 'd', c: [] };
+      sub = newFolder(segment);
       (parent.c ||= []).push(sub);
       parent.c.sort(sortChildren);
     }
@@ -1801,26 +1847,56 @@ function optionalPositiveInteger(value, max, label) {
   return number;
 }
 
-async function listTokenBatches() {
+async function catalogueYears() {
   const files = await fsp.readdir(cfg.data).catch(error => {
     if (error.code === 'ENOENT') return [];
     throw error;
   });
-  const years = files.filter(file => /^\d{4}\.json$/.test(file)).map(file => file.slice(0, 4));
-  return (await Promise.all(years.map(async year => (await readManifestFile(year)).batches?.map(b => ({ name: b.name, year })) || []))).flat();
+  return files.filter(file => /^\d{4}\.json$/.test(file)).map(file => file.slice(0, 4));
+}
+
+async function migrateFolderIds() {
+  for (const year of await catalogueYears()) {
+    const manifest = await readManifestFile(year);
+    if (assignFolderIds(manifest)) await writeJsonAtomic(path.join(cfg.data, `${year}.json`), manifest);
+  }
+}
+
+function manifestBatches(manifest, year) {
+  const batches = (manifest?.batches || []).map(b => ({ id: b.tree?.folderId, name: b.name, year }));
+  const counts = new Map();
+  for (const { id } of batches) counts.set(id, (counts.get(id) || 0) + 1);
+  return batches.filter(({ id }) => isFolderId(id) && counts.get(id) === 1);
+}
+
+async function listTokenBatches() {
+  const years = await catalogueYears();
+  return (await Promise.all(years.map(async year => manifestBatches(await readManifestFile(year), year)))).flat();
+}
+
+function authorizedBatches(rec, available) {
+  const scopes = Array.isArray(rec.batchIds) ? rec.batchIds : [];
+  const byId = new Map(available.map(batch => [`${batch.year}/${batch.id}`, batch]));
+  return scopes.map(({ year, id }) => byId.get(`${year}/${id}`)).filter(Boolean);
+}
+
+function tokenScope(rec, available) {
+  const batchYear = authorizedBatches(rec, available).map(({ name, year }) => ({ name, year }));
+  return { batches: [...new Set(batchYear.map(b => b.name))], batchYear };
 }
 
 async function bindLegacyTokens() {
   const list = await loadCTokens();
-  if (!list.some(rec => !Array.isArray(rec.batchYear))) return;
+  if (!list.some(rec => !Array.isArray(rec.batchIds))) return;
   const available = await listTokenBatches();
   await saveCTokens(list.map(rec => {
-    if (Array.isArray(rec.batchYear)) return rec;
-    const batchYear = (rec.batches || []).flatMap(name => {
-      const matches = available.filter(batch => batch.name === name);
-      return matches.length === 1 ? matches : [];
+    if (Array.isArray(rec.batchIds)) return rec;
+    const scopes = Array.isArray(rec.batchYear) ? rec.batchYear : (rec.batches || []).map(name => ({ name }));
+    const batchIds = scopes.flatMap(({ year, name }) => {
+      const matches = available.filter(b => b.name === name && (year === undefined || year === b.year));
+      return matches.length === 1 ? [{ id: matches[0].id, year: matches[0].year }] : [];
     });
-    return { ...rec, batchYear };
+    return { ...rec, batchIds };
   }));
 }
 
@@ -2016,9 +2092,12 @@ setInterval(sweepUploads, 6 * 3600 * 1000).unref();
 
 await fsp.mkdir(OBJECTS, { recursive: true });
 await fsp.mkdir(TMP, { recursive: true });
-await bindLegacyTokens().catch(error => {
-  console.error('[tree2] 无法为旧口令补齐届别，旧授权暂停使用', error);
-});
+try {
+  await migrateFolderIds();
+  await bindLegacyTokens();
+} catch (error) {
+  console.error('[tree2] 无法迁移目录标识或旧口令，尚未迁移的旧授权暂停使用', error);
+}
 sweepUploads();
 server.listen(cfg.port, cfg.host, () => {
   const addr = `${cfg.host}:${server.address().port}`;

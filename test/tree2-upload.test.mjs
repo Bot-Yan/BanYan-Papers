@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -12,6 +12,7 @@ import test from 'node:test';
 import { Script, createContext } from 'node:vm';
 
 const script = fileURLToPath(new URL('../scripts/tree2-files-server.mjs', import.meta.url));
+const preserveFolderIds = fileURLToPath(new URL('../scripts/tree2-preserve-folder-ids.mjs', import.meta.url));
 const adminToken = 'local-test-admin-token';
 const batch = name => ({ name, tree: { n: name, t: 'd', c: [] } });
 const fixture = input => {
@@ -56,6 +57,22 @@ test('closing a pending PDF preview destroys its document and suppresses stale e
   assert.equal(box.innerHTML, 'New preview');
 });
 
+test('folder shares bypass service worker caching so updates and removals are visible', async () => {
+  const source = await readFile(new URL('../public/tree2/sw.js', import.meta.url), 'utf8');
+  const origin = 'https://test.invalid';
+  let fetchHandler;
+  new Script(source).runInContext(createContext({
+    URL, location: { origin },
+    self: { addEventListener: (type, listener) => { if (type === 'fetch') fetchHandler = listener; } },
+  }));
+  for (const path of ['/d/2026/old', '/d/id/2026/2ac475ac-b878-4ccc-a9da-3d3547093569']) {
+    fetchHandler({
+      request: { method: 'GET', url: origin + path, headers: new Headers() },
+      respondWith: () => assert.fail('Folder shares must go straight to the network'),
+    });
+  }
+});
+
 test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   const root = await mkdtemp(join(tmpdir(), 'tree2-upload-test-'));
   const data = join(root, 'data'), store = join(root, 'store'), shares = join(root, 'shares');
@@ -65,6 +82,7 @@ test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   const blockedStream = fixture('fixture for failed merge stream');
   const tokensFile = join(shares, 'customer-tokens.json');
   const legacy = { id: 'f'.repeat(12), token: 'a'.repeat(32), batches: ['Unique', 'Shared'], uses: 2, maxUses: 3, expiresAt: Date.now() + 3600000 };
+  const scopedLegacy = { id: 'e'.repeat(12), token: 'b'.repeat(32), batchYear: [{ name: 'Shared', year: '2027' }], uses: 0, maxUses: 1 };
   let child;
   async function stop() {
     if (child && child.exitCode === null && child.signalCode === null) {
@@ -77,6 +95,7 @@ test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   await Promise.all([mkdir(data), mkdir(shares), mkdir(serverDir)]);
   await copyFile(script, fixtureScript);
   await copyFile(new URL('../scripts/tree2-arrange.mjs', import.meta.url), join(serverDir, 'tree2-arrange.mjs'));
+  await copyFile(new URL('../scripts/tree2-folders.mjs', import.meta.url), join(serverDir, 'tree2-folders.mjs'));
   await writeFile(faultInjection, `
 import fs from 'node:fs';
 import { Writable } from 'node:stream';
@@ -89,7 +108,11 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
   await Promise.all([
     writeFile(join(data, '2026.json'), JSON.stringify({ batches: [batch('Unique'), batch('Shared')] })),
     writeFile(join(data, '2027.json'), JSON.stringify({ batches: [batch('Shared')] })),
-    writeFile(tokensFile, JSON.stringify([legacy])),
+    writeFile(join(data, '2029.json'), JSON.stringify({ batches: [{
+      ...batch('原批次'),
+      tree: { ...batch('原批次').tree, c: [batch('原目录').tree, batch('目标').tree] },
+    }] })),
+    writeFile(tokensFile, JSON.stringify([legacy, scopedLegacy])),
   ]);
   let origin;
   async function start() {
@@ -128,13 +151,20 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
   });
 
   await t.test('legacy links retain identity, quota, expiry and unambiguous scope after restart', async () => {
-    const migrated = JSON.parse(await readFile(tokensFile, 'utf8'))[0];
-    assert.deepEqual(migrated, { ...legacy, batchYear: [{ name: 'Unique', year: '2026' }] });
+    const migrated = JSON.parse(await readFile(tokensFile, 'utf8'));
+    const id = (await readManifest('2026')).batches[0].tree.folderId;
+    const scopedId = (await readManifest('2027')).batches[0].tree.folderId;
+    assert.deepEqual(migrated, [
+      { ...legacy, batchIds: [{ id, year: '2026' }] },
+      { ...scopedLegacy, batchIds: [{ id: scopedId, year: '2027' }] },
+    ]);
     await stop();
     await start();
-    assert.deepEqual(JSON.parse(await readFile(tokensFile, 'utf8'))[0], migrated);
+    assert.deepEqual(JSON.parse(await readFile(tokensFile, 'utf8')), migrated);
     const check = await api('ctoken-check?token=' + legacy.token);
-    assert.deepEqual(check.body.batchYear, migrated.batchYear);
+    assert.deepEqual(check.body.batchYear, [{ name: 'Unique', year: '2026' }]);
+    const scopedCheck = await api('ctoken-check?token=' + scopedLegacy.token);
+    assert.deepEqual(scopedCheck.body.batchYear, scopedLegacy.batchYear);
     assert.equal(check.body.remaining, 1);
     assert.equal(check.body.expiresAt, legacy.expiresAt);
     assert.equal((await create(['Shared'])).status, 400);
@@ -287,5 +317,91 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.equal(manifest.totals.bytes, 5 * file.bytes.length);
     const uplog = JSON.parse(await readFile(join(shares, 'uplog.json'), 'utf8'));
     assert.deepEqual(uplog.filter(row => row.type === 'arrange').map(row => row.action), ['mkdir', 'dissolve', 'move', 'flatten']);
+  });
+
+  await t.test('guest scope and folder links follow identity through rename, moves, path reuse and restart', async () => {
+    const year = '2029';
+    const post = (path, body) => api(path, { method: 'POST', body: { year, ...body } });
+    const verify = token => api('ctoken-check?token=' + token);
+    const legacyPath = (...segs) => `/d/${year}/${encodeURIComponent(segs.join('/'))}`;
+    const stablePath = node => `/d/id/${year}/${node.folderId}`;
+    const get = path => fetch(origin + path, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+    const assertRedirect = async (from, to) => {
+      const response = await get(from);
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), to);
+    };
+    const arrange = async action => {
+      const { status, body } = await post('arrange', action);
+      assert.equal(status, 200);
+      assert.equal((await post('arrange', { ...action, revision: body.revision })).status, 200);
+    };
+    const rootFolder = (await readManifest(year)).batches[0].tree;
+    const stableRoot = stablePath(rootFolder);
+    const stableFolder = stablePath(rootFolder.c[0]);
+    const stableParent = stablePath(rootFolder.c[1]);
+    const oldFolder = legacyPath('原批次', '原目录');
+    assert.equal((await get(oldFolder)).status, 200);
+    const { status, body: credential } = await create([{ name: '原批次', year }], 2);
+    assert.equal(status, 200);
+
+    assert.equal((await post('rename', { path: '原批次', newName: '新批次' })).status, 200);
+    assert.deepEqual((await verify(credential.token)).body.batchYear, [{ name: '新批次', year }]);
+    await assertRedirect(legacyPath('原批次'), stableRoot);
+    await assertRedirect(oldFolder, stableFolder);
+    await arrange({ action: 'move', kind: 'd', source: ['新批次', '原目录'], destination: ['新批次', '目标'] });
+    assert.equal((await post('rename', { path: '新批次/目标/原目录', newName: '新目录' })).status, 200);
+    await arrange({ action: 'mkdir', source: ['新批次'], name: '原目录' });
+    await assertRedirect(legacyPath('新批次', '原目录'), stableFolder);
+
+    const livePath = join(data, year + '.json');
+    const scannedPath = join(root, 'scanned.json');
+    const outputPath = join(root, 'ready.json');
+    const replacementPath = join(root, 'replacement.json');
+    const live = await readManifest(year);
+    await writeFile(scannedPath, JSON.stringify(live, (key, value) =>
+      ['folderId', 'folderAliases', 'removedFolders'].includes(key) ? undefined : value));
+    const preserve = (output, ...extra) => spawnSync(
+      process.execPath, [preserveFolderIds, livePath, scannedPath, output, ...extra], { encoding: 'utf8' },
+    );
+    const merged = preserve(outputPath);
+    assert.equal(merged.status, 0, merged.stderr);
+    assert.equal(preserve(outputPath).status, 1);
+    const regenerated = preserve(replacementPath, '--new', '新批次');
+    assert.equal(regenerated.status, 0, regenerated.stderr);
+    const replacementManifest = JSON.parse(await readFile(replacementPath, 'utf8'));
+    assert.notEqual(replacementManifest.batches[0].tree.folderId, rootFolder.folderId);
+    assert.equal(replacementManifest.removedFolders[rootFolder.folderId], null);
+    await stop();
+    await copyFile(outputPath, livePath);
+    await start();
+    const page = await get(stableFolder);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<h1>新目录<\/h1>/);
+    assert.match(html, new RegExp(stableParent));
+    await assertRedirect(oldFolder, stableFolder);
+    assert.equal((await verify(credential.token)).body.remaining, 2);
+
+    const renamedUpload = fixture('guest upload after batch rename');
+    assert.equal((await part(renamedUpload, { year, token: credential.token })).status, 200);
+    assert.equal((await commit(renamedUpload, { year, token: credential.token, folder: '新批次' })).status, 200);
+    assert.equal((await verify(credential.token)).body.remaining, 1);
+    await arrange({ action: 'dissolve', source: ['新批次', '目标', '新目录'] });
+    const removed = await get(stableFolder);
+    assert.equal(removed.status, 410);
+    const removedHtml = await removed.text();
+    assert.match(removedHtml, /原目录已移除/);
+    assert.match(removedHtml, new RegExp(stableParent));
+    await assertRedirect(oldFolder, stableFolder);
+
+    assert.equal((await post('remove', { path: '新批次' })).status, 200);
+    assert.equal((await post('batch', { name: '新批次' })).status, 200);
+    assert.equal((await verify(credential.token)).status, 403);
+    assert.equal((await get(stableRoot)).status, 410);
+    assert.equal((await commit(renamedUpload, { year, token: credential.token, folder: '新批次', parts: 0 })).status, 403);
+    const replacement = (await readManifest(year)).batches[0].tree;
+    assert.notEqual(replacement.folderId, rootFolder.folderId);
+    assert.equal((await get(stablePath(replacement))).status, 200);
   });
 });

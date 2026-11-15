@@ -1229,11 +1229,13 @@ function doShare(file) {
   });
 }
 
-/** 文件夹分享：/d/<届>/<路径>，落地页列出全部文件（可预览/下载），子文件夹可继续点进去。 */
 function shareFolder(folderPath) {
+  const folderId = nodeAt(folderPath)?.folderId;
+  const year = encodeURIComponent(state.query.s);
+  const path = folderId ? `/d/id/${year}/${encodeURIComponent(folderId)}` : `/d/${year}/${encodeURIComponent(folderPath)}`;
   shareDialog({
     name: folderPath,
-    url: `${location.origin}/d/${state.query.s}/${encodeURIComponent(folderPath)}`,
+    url: `${apiBase() || location.origin}${path}`,
     note: '这个链接打开就是文件夹的清单页——里面每个文件都能预览/下载，子文件夹可以继续点进去。同一文件夹所有人拿到的都是同一个链接。',
   });
 }
