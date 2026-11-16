@@ -304,6 +304,9 @@ html[data-theme="dark"] .t2-nd-theme .t2-theme-sun { display: block; }
 .react-jinke-music-player-mobile-singer {
   margin-top: 0 !important;
 }
+.react-jinke-music-player-mobile-singer:has(> .react-jinke-music-player-mobile-singer-name:empty) {
+  display: none !important;
+}
 /* 底部播放模式/播放列表两个角标钉死在底边（原本在文档流里，
    会被下面播放行的位移一起推走，永远对不齐） */
 .react-jinke-music-player-mobile-operation {
