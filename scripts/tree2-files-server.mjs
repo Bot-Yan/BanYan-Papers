@@ -86,6 +86,7 @@ const MIME = {
   '.m4a': 'audio/mp4',
   '.ogg': 'audio/ogg',
   '.flac': 'audio/flac',
+  '.aac': 'audio/aac',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.json': 'application/json; charset=utf-8',
@@ -485,7 +486,10 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
   const key = safeKey(url.searchParams.get('k'));
   const name = String(url.searchParams.get('n') || path.basename(key)).replace(/[\r\n"]/g, '');
   const download = url.searchParams.get('download') === '1';
+  return servePreviewBytes(req, res, key, name, { download });
+});
 
+async function servePreviewBytes(req, res, key, name, { download = false } = {}) {
   // 音频预览优先走内网代理；下载和未同步的音频使用本地对象。
   const audioExt = path.extname(key).toLowerCase();
   if (AUDIO_EXT.has(audioExt) && !download) {
@@ -494,7 +498,7 @@ route('GET', /^\/api\/tree2\/files\/([^/]+)$/, async (req, res, [, year], url) =
     if (proxyUrl) return proxyAudioStream(req, res, proxyUrl);
   }
   return serveObjectBytes(req, res, key, name, { download });
-});
+}
 
 /**
  * 对象字节输出：Range/206（音频拖动、PDF 分段读）、ETag、attachment/inline。
@@ -591,45 +595,111 @@ function kindLabelOf(ext) {
   return '文件';
 }
 
+const themeAsset = relative => fs.readFileSync(path.join(ROOT, 'public', 'tree2', relative), 'utf8');
+const SHARE_PAGE_THEME = `<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fffaf0">
+<script>${themeAsset('js/theme.js')}</script><style>${themeAsset('css/theme.css')}</style>`;
+const themeToggle = `<button class="t2-theme-switch" type="button" data-theme-toggle aria-label="切换至暗色"><svg class="t2-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg><svg class="t2-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>`;
+
+const SHARE_ICONS = {
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM9 21v-7h6v7"/>',
+  file: '<path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h6"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
+  open: '<path d="M3 19V6a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v3M3 19h16a1 1 0 0 0 1-.7l2-6a1 1 0 0 0-1-1.3H7a1 1 0 0 0-1 .7z"/>',
+  preview: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>',
+  download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+  archive: '<path d="M3 4h18v4H3zm2 4v12h14V8M10 12h4m-2 0v5"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m3 17 5-5 4 4 4-5 5 6"/>',
+  audio: '<path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/>',
+  video: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 8 6 4-6 4z"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M9 9v11m6-11v11"/>',
+  up: '<path d="m6 10 6-6 6 6M12 4v16"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+  warning: '<path d="M10.3 4.6 2.6 18a1.3 1.3 0 0 0 1.1 2h16.6a1.3 1.3 0 0 0 1.1-2L13.7 4.6a2 2 0 0 0-3.4 0ZM12 9v4m0 3h.01"/>',
+};
+const shareIcon = kind => `<svg class="share-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${SHARE_ICONS[kind]}</svg>`;
+const shareBrand = `<header class="t2-theme-header"><a class="brand" href="/">${shareIcon('home')}备考资料导航</a>${themeToggle}</header>`;
+
+const SHARE_IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+const SHARE_VIDEO = new Set(['.mp4', '.webm']);
+const SHARE_WORD = new Set(['.docx', '.docm', '.dotx']);
+const SHARE_TABLES = new Set(['.xlsx', '.xls', '.xlsm', '.xlsb', '.ods', '.csv', '.tsv']);
+const SHARE_TEXT = new Set(['.txt', '.md', '.markdown', '.json', '.xml', '.html', '.htm', '.css', '.js', '.log']);
+function shareFileIcon(ext) {
+  if (SHARE_IMAGES.has(ext)) return 'image';
+  if (SHARE_VIDEO.has(ext)) return 'video';
+  if (AUDIO_EXT.has(ext)) return 'audio';
+  if (SHARE_TABLES.has(ext)) return 'table';
+  if (ext === '.zip') return 'archive';
+  return 'file';
+}
+function canSharePreview(ext) {
+  return ext === '.pdf' || SHARE_IMAGES.has(ext) || SHARE_VIDEO.has(ext) || AUDIO_EXT.has(ext) ||
+    SHARE_WORD.has(ext) || SHARE_TABLES.has(ext) || SHARE_TEXT.has(ext);
+}
+const shareFooter = `<footer class="foot"><span>© 2026 备考资料导航</span> <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a></footer>`;
+
 const SHARE_PAGE_CSS = `
- body{margin:0;padding:48px 18px;font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif;color:#1e3a5f;
-      background:radial-gradient(900px 340px at 50% -10%,#fff6e0,rgba(255,246,224,0) 70%),#fffaf0;min-height:100vh;box-sizing:border-box}
+ body{margin:0;padding:48px 18px;font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif;color:var(--t2-ink);
+      background:radial-gradient(900px 340px at 50% -10%,var(--t2-glow),transparent 70%),var(--t2-paper);min-height:100vh;box-sizing:border-box}
  main{max-width:640px;margin:0 auto}
- .card{background:#fff;border:1px solid #e8dcc3;border-radius:14px;padding:26px 26px 22px;box-shadow:0 8px 26px rgba(30,58,95,.06)}
- .brand{display:flex;align-items:center;gap:8px;font-weight:700;text-decoration:none;color:#1e3a5f;margin:0 0 18px;font-size:15px}
- .brand img{width:22px;height:22px}
- .kind{font-size:12px;color:#b08a3e;letter-spacing:.12em;margin:0 0 6px}
+ main.word-share{max-width:960px}
+ .card{background:var(--t2-card);border:1px solid var(--t2-line);border-radius:14px;padding:26px 26px 22px;box-shadow:var(--t2-shadow)}
+ .brand{display:flex;align-items:center;gap:8px;font-weight:700;text-decoration:none;color:var(--t2-ink);margin:0;font-size:15px}
+ .t2-theme-header{margin:0 0 18px}
+ .share-icon{display:block;flex:none}
+ .kind,.f-act a,.down{display:flex;align-items:center;gap:6px}
+ .kind .share-icon,.f-act .share-icon,.crumb .share-icon{width:15px;height:15px}
+ .crumb .share-icon{display:inline-block;vertical-align:middle;color:var(--t2-muted)}
+ .empty-share{color:var(--t2-muted)}
+ .empty-share .share-icon{margin-bottom:8px}
+ .kind{font-size:12px;color:var(--t2-accent);letter-spacing:.12em;margin:0 0 6px}
  h1{font-size:20px;line-height:1.45;margin:0 0 10px;word-break:break-all}
- .meta{color:#8a7f6e;font-size:13px;margin:0 0 20px}
- .down{display:block;text-align:center;padding:12px 20px;background:#1e3a5f;color:#fff;border-radius:10px;
+ .meta{color:var(--t2-muted);font-size:13px;margin:0 0 20px}
+ .down{justify-content:center;text-align:center;padding:12px 20px;background:var(--t2-action);color:var(--t2-action-ink);border-radius:10px;
        text-decoration:none;font-weight:700;font-size:15px;margin:0 0 6px}
- .down:hover{background:#16314f}
- .hint{color:#8a7f6e;font-size:12.5px;margin:8px 0 0}
+ .down:hover{background:var(--t2-action-hover)}
+ .hint{color:var(--t2-muted);font-size:12.5px;margin:8px 0 0}
  .preview{margin:18px 0 0}
- .preview img{max-width:100%;border-radius:10px;border:1px solid #e8dcc3;display:block;margin:0 auto}
- .preview iframe{width:100%;height:70vh;border:1px solid #e8dcc3;border-radius:10px;background:#f6f2e8}
- .preview video{width:100%;border-radius:10px;border:1px solid #e8dcc3;display:block}
+ .preview > img{max-width:100%;border-radius:10px;border:1px solid var(--t2-line);display:block;margin:0 auto}
+ .preview iframe{width:100%;height:70vh;border:1px solid var(--t2-line);border-radius:10px;background:var(--t2-field)}
+ .preview video{width:100%;border-radius:10px;border:1px solid var(--t2-line);display:block}
  .preview audio{width:100%;margin:4px 0 0}
- .t2-landing-doc{min-height:120px;font-size:13px;color:#8a7f6e}
- .t2-landing-doc .docx-wrapper{overflow-x:auto}
- .crumb{color:#8a7f6e;font-size:12.5px;margin:0 0 10px;word-break:break-all}
- .crumb a{color:#1e3a5f}
+ .t2-landing-doc{min-height:120px;font-size:13px;color:var(--t2-muted)}
+ .crumb{color:var(--t2-muted);font-size:12.5px;margin:0 0 10px;word-break:break-all}
+ .crumb a{color:var(--t2-ink)}
  .folder-list{list-style:none;margin:18px 0 0;padding:0}
- .folder-list li{display:flex;align-items:center;gap:10px;border-bottom:1px solid #f0e8d8;padding:9px 2px}
+ .folder-list li{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--t2-line);padding:9px 2px}
  .folder-list li:last-child{border-bottom:0}
- .folder-list .ico{flex:none;width:20px;text-align:center}
+ .folder-list .ico{flex:none;display:flex;align-items:center;width:20px;color:var(--t2-muted)}
  .folder-list .f-name{flex:1;min-width:0;word-break:break-all}
- .folder-list .f-name a{color:#1e3a5f;text-decoration:none}
+ .folder-list .f-name a{color:var(--t2-ink);text-decoration:none}
  .folder-list .f-name a:hover{text-decoration:underline}
- .folder-list .f-size{flex:none;color:#8a7f6e;font-size:12px}
+ .folder-list .f-size{flex:none;color:var(--t2-muted);font-size:12px}
  .folder-list .f-act{flex:none;display:flex;gap:8px}
- .folder-list .f-act a{font-size:12.5px;color:#1e3a5f;text-decoration:none;border:1px solid #d9cdb5;border-radius:8px;padding:3px 9px}
- .folder-list .f-act a:hover{background:#fffaf0}
- .foot{text-align:center;color:#b0a893;font-size:12px;margin:18px 0 0}
- .foot a{color:#8a7f6e}
+ .folder-list .f-act a{font-size:12.5px;color:var(--t2-ink);text-decoration:none;white-space:nowrap;border:1px solid var(--t2-line);border-radius:8px;padding:3px 9px}
+ .folder-list .f-act a:hover{background:var(--t2-soft)}
+ .foot{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 14px;color:var(--t2-muted);font-size:12px;margin:18px 0 0}
+ .foot a{color:inherit;text-underline-offset:3px}
+ .t2-landing-word .t2-doc{width:100%;min-width:0;overflow-x:auto;color:#222;color-scheme:light}
+ .t2-landing-word .docx-wrapper{width:max-content;margin-inline:auto;padding:0;background:transparent}
+ .t2-landing-word .docx-wrapper > section.docx{box-sizing:border-box;margin-bottom:12px}
+ .t2-landing-doc > :is(table,pre){color:var(--t2-ink)}
+ @media(max-width:480px){
+   body{padding:20px 10px}
+   .card{padding:16px 12px}
+   .folder-list li{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 8px}
+   .folder-list .f-act{grid-column:2 / -1}
+ }
 `;
 
-const SHARE_404_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>分享不存在</title></head><body style="margin:0;padding:64px 20px;font:15px/1.8 'Microsoft YaHei','PingFang SC',sans-serif;color:#1e3a5f;background:#fffaf0;text-align:center"><main style="max-width:480px;margin:0 auto"><h1 style="font-size:20px">分享不存在或已取消</h1><p style="color:#8a7f6e">链接可能输错了，或者文件已不在库里。</p><p><a href="/" style="color:#1e3a5f">回资料库看看 →</a></p></main></body></html>`;
+const SHARE_404_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>分享不存在</title>
+${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main>
+<div class="card">${shareBrand}<div class="empty-share">${shareIcon('warning')}</div>
+<h1>分享不存在或已取消</h1><p class="meta">链接可能输错了，或者文件已不在库里。</p>
+<a class="down" href="/">${shareIcon('home')}返回资料库</a></div>${shareFooter}
+</main></body></html>`;
 
 /** key → {name, season}：从各届清单反查显示名（落地页标题/下载文件名用），缓存 30 秒。 */
 const keyMetaCache = new Map();
@@ -654,13 +724,13 @@ async function keyMetaMap() {
   return map;
 }
 
-/** 落地页：品牌头 + 文件信息 + 下载按钮 + 按类型的内嵌预览，纯静态无需 JS。 */
+/** 文件分享页：按类型加载站内预览，并提供单独的下载入口。 */
 function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, visitsLabel = '', audioPending = false }) {
   const filesUrl = `/api/tree2/files/${encodeURIComponent(season)}?k=${encodeURIComponent(key)}&n=${encodeURIComponent(name)}`;
   // 客户端渲染类预览共用的净化器 + 容器
   const T2_CLEAN = '<script>function t2Clean(root){root.querySelectorAll(\'script,iframe,object,embed,link,meta\').forEach(function(e){e.remove()});[].forEach.call(root.querySelectorAll(\'*\'),function(e){[].slice.call(e.attributes).forEach(function(a){if(/^on/i.test(a.name))e.removeAttribute(a.name)})})}</script>';
   let preview = '';
-  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext)) {
+  if (SHARE_IMAGES.has(ext)) {
     preview = `<div class="preview"><img src="${escHtml(filesUrl)}" alt=""></div>`;
   } else if (ext === '.pdf') {
     // pdf.js 渲染：浏览器原生 iframe 在 iPhone Safari 上对 PDF 支持很差（常常只出第一页）
@@ -678,7 +748,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
   }).then(function (doc) {
     host.innerHTML = '';
     var info = document.createElement('p');
-    info.style.cssText = 'color:#8a7f6e;font-size:12px;margin:0 0 10px';
+    info.style.cssText = 'color:var(--t2-muted);font-size:12px;margin:0 0 10px';
     info.textContent = '共 ' + doc.numPages + ' 页 · 滚动查看';
     host.appendChild(info);
     var i = 1;
@@ -690,7 +760,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
         var holder = document.createElement('div');
         holder.style.cssText = 'margin:0 auto 14px;width:min(100%,760px)';
         var canvas = document.createElement('canvas');
-        canvas.style.cssText = 'width:100%;display:block;border:1px solid #e8dcc3;border-radius:8px;background:#fff';
+        canvas.style.cssText = 'width:100%;display:block;border:1px solid var(--t2-line);border-radius:8px;background:#fff';
         host.appendChild(holder);
         holder.appendChild(canvas);
         var cssW = Math.min(host.clientWidth || 640, 760);
@@ -709,7 +779,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
   }).catch(function () { host.textContent = 'PDF 预览失败，请用「下载文件」查看。'; });
 })();
 </` + `script>`;
-  } else if (['.mp4', '.webm'].includes(ext)) {
+  } else if (SHARE_VIDEO.has(ext)) {
     preview = `<div class="preview"><video controls preload="metadata" src="${escHtml(filesUrl)}"></video></div>`;
   } else if (AUDIO_EXT.has(ext)) {
     // 音频由 files 路由流式输出。
@@ -717,37 +787,15 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
       `<div class="preview"><audio controls preload="metadata" src="${escHtml(filesUrl)}"></audio>` +
       (audioPending ? `<p class="hint">音频正在同步到音乐库，同步完成后这个链接会直接打开在线播放页（最多一小时）。</p>` : ``) +
       `</div>`;
-  } else if (['.docx', '.docm', '.dotx'].includes(ext)) {
-    // Word：与资料库同一套 docx-preview 渲染
-    preview =
-      `<div class="preview"><div id="t2-preview" class="t2-landing-doc">正在渲染 Word 预览…</div></div>` +
-      `<script src="/vendor/jszip-3.10.2/jszip.min.js"></` + `script>` +
-      `<script src="/vendor/docx-preview-0.4.1/docx-preview.min.js"></` + `script>` +
-      T2_CLEAN +
-      `<script>
-(function () {
-  var host = document.getElementById('t2-preview');
-  fetch(${JSON.stringify(filesUrl)}).then(function (r) { return r.blob(); }).then(function (b) {
-    return docx.renderAsync(b, host, null, {
-      className: 'docx', inWrapper: true, breakPages: true, ignoreWidth: false, ignoreHeight: false,
-      ignoreFonts: false, renderHeaders: true, renderFooters: true, renderFootnotes: true,
-      useBase64URL: true, experimental: true, ignoreLastRenderedPageBreak: true,
-    });
-  }).then(function () {
-    t2Clean(host);
-    host.querySelectorAll('.docx-wrapper').forEach(function (w) {
-      w.style.cssText = 'background:#fff;padding:28px 20px;margin:0 auto;box-shadow:0 2px 14px rgba(30,58,95,.14);border-radius:8px';
-    });
-    if ((host.textContent || '').trim().length < 20 && !host.querySelector('img')) {
-      var p = document.createElement('p');
-      p.style.cssText = 'margin:10px;color:#8a7f6e;font-size:12.5px';
-      p.textContent = '这份 Word 里几乎没有可渲染的文字（可能是扫描图或文本框排版），建议下载后查看。';
-      host.appendChild(p);
-    }
-  }).catch(function () { host.textContent = '预览渲染失败，请下载后查看。'; });
-})();
-</` + `script>`;
-  } else if (['.xlsx', '.xlsm', '.xls', '.csv', '.tsv'].includes(ext)) {
+  } else if (SHARE_WORD.has(ext)) {
+    preview = `<div id="t2-preview" class="preview t2-landing-doc t2-landing-word">正在渲染 Word 预览…</div>
+<script type="module">
+  const host = document.getElementById('t2-preview');
+  import('/js/preview.js?v=20261116-word-fit')
+    .then(({ render }) => render(host, ${JSON.stringify(filesUrl)}, ${JSON.stringify('preview' + ext)}))
+    .catch(() => { host.textContent = 'Word 预览组件加载失败，请用「下载文件」查看。'; });
+</script>`;
+  } else if (SHARE_TABLES.has(ext)) {
     // 表格：与资料库同一套 SheetJS，每个工作表一段
     preview =
       `<div class="preview"><div id="t2-preview" class="t2-landing-doc">正在渲染表格预览…</div></div>` +
@@ -762,7 +810,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
     wb.SheetNames.forEach(function (name) {
       var h = document.createElement('h4');
       h.textContent = name;
-      h.style.cssText = 'margin:14px 0 6px;font-size:13px;color:#8a7f6e';
+      h.style.cssText = 'margin:14px 0 6px;font-size:13px;color:var(--t2-muted)';
       var t = document.createElement('template');
       t.innerHTML = XLSX.utils.sheet_to_html(wb.Sheets[name], { header: '', footer: '' });
       t2Clean(t.content);
@@ -770,15 +818,15 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
       host.appendChild(t.content);
     });
     host.querySelectorAll('table').forEach(function (tb) {
-      tb.style.cssText = 'border-collapse:collapse;width:100%;background:#fff;font-size:12px';
+      tb.style.cssText = 'border-collapse:collapse;width:100%;background:var(--t2-card);font-size:12px';
       [].forEach.call(tb.querySelectorAll('td,th'), function (td) {
-        td.style.cssText = 'border:1px solid #d9cdb5;padding:4px 7px;white-space:nowrap';
+        td.style.cssText = 'border:1px solid var(--t2-line);padding:4px 7px;white-space:nowrap';
       });
     });
   }).catch(function () { host.textContent = '预览渲染失败，请下载后查看。'; });
 })();
 </` + `script>`;
-  } else if (['.txt', '.md'].includes(ext)) {
+  } else if (SHARE_TEXT.has(ext)) {
     preview =
       `<div class="preview"><div id="t2-preview" class="t2-landing-doc">正在载入文本…</div></div>` +
       `<script>
@@ -786,7 +834,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
   var host = document.getElementById('t2-preview');
   fetch(${JSON.stringify(filesUrl)}).then(function (r) { return r.text(); }).then(function (t) {
     var pre = document.createElement('pre');
-    pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid #e8dcc3;border-radius:10px;padding:16px;font:12.5px/1.7 ui-monospace,Consolas,monospace;max-height:70vh;overflow:auto';
+    pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;background:var(--t2-field);border:1px solid var(--t2-line);border-radius:10px;padding:16px;font:12.5px/1.7 ui-monospace,Consolas,monospace;max-height:70vh;overflow:auto';
     pre.textContent = t.slice(0, 200000);
     host.replaceChildren(pre);
   }).catch(function () { host.textContent = '预览载入失败，请下载后查看。'; });
@@ -797,24 +845,25 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-store">
 <title>${escHtml(name)} · 文件分享</title>
-<style>${SHARE_PAGE_CSS}</style></head><body><main>
+ ${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main${SHARE_WORD.has(ext) ? ' class="word-share"' : ''}>
 <div class="card">
-<a class="brand" href="/"><img src="/assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
-<p class="kind">${escHtml(kindLabelOf(ext))} · 文件分享</p>
+${shareBrand}
+<p class="kind">${shareIcon(shareFileIcon(ext))}${escHtml(kindLabelOf(ext))} · 文件分享</p>
 <h1>${escHtml(name)}</h1>
 <p class="meta">${fmtBytes(size)} · ${escHtml(dateLabel)}${visitsLabel}</p>
-<a class="down" href="${escHtml(filesUrl)}&download=1" download>下载文件</a>
+<a class="down" href="${escHtml(filesUrl)}&download=1" download>${shareIcon('download')}下载文件</a>
 <p class="hint">手机上长按上面的按钮也可以选择用其他应用打开。</p>
 ${preview}
 </div>
-<p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
+${shareFooter}
 </main></body>
 <script>
 // 倍速记忆：黑胶页（music-custom.js）把倍速存在 localStorage['t2Rate']，
 // 落地页的音频沿用同一倍速。这里只应用不切换——落地页没有倍速按钮，
 // 之前留下的按钮逻辑操作的是不存在的 [data-rate] 元素，已裁掉。
 (function () {
-  var target = parseFloat(localStorage.getItem('t2Rate')) || 1;
+  var target = 1;
+  try { target = parseFloat(localStorage.getItem('t2Rate')) || 1; } catch (e) {}
   document.querySelectorAll('audio').forEach(function (a) { try { a.playbackRate = target; } catch (e) {} });
 })();
 </script></html>`;
@@ -829,6 +878,70 @@ async function latestManifestYear() {
   return years[years.length - 1] || '';
 }
 
+const musicShareUrl = (config, id, key) =>
+  `${config?.base || '/music'}/share/${encodeURIComponent(id)}?t2file=${encodeURIComponent(key)}`;
+
+// Navidrome 0.64.2 (10114574) 的分享页运行时，与 /music/share/ 使用同一份资源。
+const VINYL_ASSETS = '/music/share/assets';
+const vinylPath = (year, key) => `/api/tree2/vinyl/${year}/${path.basename(key)}`;
+const vinylTrack = '([0-9a-f]{64}\\.(?:mp3|wav|m4a|ogg|flac|aac))';
+const vinylKey = track => `${track.slice(0, 2)}/${track}`;
+const scriptJson = value => JSON.stringify(JSON.stringify(value)).replaceAll('<', '\\u003c');
+
+route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req, res, [, year, track]) => {
+  requireRead(req);
+  const key = vinylKey(track);
+  const stat = await fsp.stat(objPath(key)).catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (!stat?.isFile()) throw new HttpError(404, '音频文件不存在');
+  const name = (await keyMetaMap()).get(key)?.name || track;
+  const title = name.slice(0, name.length - path.extname(name).length);
+  const config = {
+    version: '0.64.2 (10114574)',
+    defaultLanguage: '',
+    defaultTheme: 'Dark',
+    defaultUIVolume: 100,
+    enableCoverAnimation: true,
+    uiCoverArtSize: 300,
+    baseURL: `/api/tree2/vinyl/${year}`,
+    shareURL: '',
+    auth: { isAdmin: false },
+  };
+  const info = { id: track, description: title, downloadable: true, tracks: [{ id: track, title, duration: 0 }] };
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>${escHtml(title)} · 黑胶播放器</title>
+${SHARE_PAGE_THEME}
+<script>window.process={env:{}};window.__APP_CONFIG__=${scriptJson(config)};window.__SHARE_INFO__=${scriptJson(info)};</script>
+<link rel="stylesheet" href="${VINYL_ASSETS}/index-uCXnEN-G.css">
+<link rel="stylesheet" href="/tree2/music-custom.css?v=20261116-theme">
+<script defer src="/tree2/music-custom.js?v=20261116-theme"></script>
+<script type="module" src="${VINYL_ASSETS}/index-7wbOXZOY.js"></script>
+</head><body><div id="root"></div></body></html>`;
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "frame-ancestors 'self'",
+    'X-Frame-Options': 'SAMEORIGIN',
+  });
+  res.end(req.method === 'HEAD' ? undefined : html);
+});
+
+route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/share/(s|d|img)/${vinylTrack}$`), async (req, res, [, , type, track]) => {
+  requireRead(req);
+  if (type === 'img') return serveStatic(req, res, '/tree2/assets/vinyl-cover.png');
+  const key = vinylKey(track);
+  const name = (await keyMetaMap()).get(key)?.name || track;
+  return servePreviewBytes(req, res, key, name, { download: type === 'd' });
+});
+
+function redirectVinyl(req, res, year, key) {
+  res.writeHead(302, { ...cors(req), Location: vinylPath(year, key), 'Cache-Control': 'no-store' });
+  res.end();
+}
+
 // 确定性分享链接：/s/<存储键>
 route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (req, res, [, key]) => {
   const st = await fsp.stat(objPath(key)).catch(() => null);
@@ -838,17 +951,18 @@ route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (re
   }
   bumpStat(key, 'pv'); // 分享页访问计数
   const ext = path.extname(key).toLowerCase();
-  const sha = path.basename(key, ext);
   const meta = (await keyMetaMap()).get(key);
   const name = (meta && meta.name) || path.basename(key);
   const season = (meta && meta.season) || (await latestManifestYear()) || '2026';
 
   if (AUDIO_EXT.has(ext)) {
+    if (!cfg.privateRead && key === vinylKey(path.basename(key))) return redirectVinyl(req, res, season, key);
+    const sha = path.basename(key, ext);
     const am = (await readJsonCached(ND_MAP_FILE, 'map', 'mapMtime')) || {};
     const sm = (await readJsonCached(ND_SHARE_FILE, 'shares', 'sharesMtime')) || {};
     if (am[sha] && sm[sha]) {
       const ndCfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
-      res.writeHead(302, { ...cors(req), Location: `${(ndCfg && ndCfg.base) || '/music'}/share/${encodeURIComponent(sm[sha])}`, 'Cache-Control': 'no-store' });
+      res.writeHead(302, { ...cors(req), Location: musicShareUrl(ndCfg, sm[sha], key), 'Cache-Control': 'no-store' });
       return res.end();
     }
   }
@@ -859,7 +973,6 @@ route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (re
     size: st.size,
     season,
     dateLabel: st.mtime.toISOString().slice(0, 10),
-    audioPending: AUDIO_EXT.has(ext),
   });
 });
 
@@ -871,13 +984,17 @@ route('GET', /^\/s\/([A-Za-z0-9]{4,64})$/, async (req, res, [, id]) => {
     return res.end(SHARE_404_HTML);
   }
   mutateShares(async (list) => list.map((s) => (s.id === entry.id ? { ...s, visits: (s.visits || 0) + 1 } : s))).catch(() => {});
+  if (!cfg.privateRead && AUDIO_EXT.has(path.extname(entry.key || '')) && entry.key === vinylKey(path.basename(entry.key))) {
+    const year = /^\d{4}$/.test(entry.season) ? entry.season : (await latestManifestYear()) || '2026';
+    return redirectVinyl(req, res, year, safeKey(entry.key));
+  }
   // 音频：优先使用注册表里的黑胶页映射，否则走落地页。
   const nd = (await readJsonCached(SHARE_ND_FILE, 'shareNd', 'shareNdMtime')) || {};
   const info = nd[entry.id];
   const isAudio = AUDIO_EXT.has(entry.ext);
   if (isAudio && info && info.ndShareId) {
     const ndCfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
-    res.writeHead(302, { ...cors(req), Location: `${(ndCfg && ndCfg.base) || '/music'}/share/${encodeURIComponent(info.ndShareId)}`, 'Cache-Control': 'no-store' });
+    res.writeHead(302, { ...cors(req), Location: musicShareUrl(ndCfg, info.ndShareId, entry.key), 'Cache-Control': 'no-store' });
     return res.end();
   }
   return sendShareLanding(req, res, {
@@ -908,21 +1025,27 @@ function sendFolderLanding(req, res, { year, segs, node, batch, ancestors = [] }
   // 面包屑：每一段都能点回上一层
   const crumb = segs
     .map((s, i) => (i === segs.length - 1 ? escHtml(s) : `<a href="${escHtml(folderLink(year, ancestors[i], segs.slice(0, i + 1)))}">${escHtml(s)}</a>`))
-    .join(' <span style="color:#c9bda6">/</span> ');
+    .join(` ${shareIcon('chevron')} `);
 
   const rows = [
     ...dirs.map((d) => {
       const link = escHtml(folderLink(year, d, [...segs, d.n]));
       const nFiles = countNodeFiles(d);
-      return `<li><span class="ico">📁</span><span class="f-name"><a href="${link}">${escHtml(d.n)}</a></span>` +
-        `<span class="f-size">${nFiles} 个文件</span><span class="f-act"><a href="${link}">打开</a></span></li>`;
+      return `<li><span class="ico">${shareIcon('folder')}</span><span class="f-name"><a href="${link}">${escHtml(d.n)}</a></span>` +
+        `<span class="f-size">${nFiles} 个文件</span><span class="f-act"><a href="${link}">${shareIcon('open')}打开</a></span></li>`;
     }),
     ...files.map((f) => {
-      const filesUrl = `/api/tree2/files/${encodeURIComponent(year)}?k=${encodeURIComponent(f.k)}&n=${encodeURIComponent(f.n)}`;
-      return `<li><span class="ico">📄</span><span class="f-name"><a href="${escHtml(filesUrl)}" target="_blank" rel="noopener">${escHtml(f.n)}</a></span>` +
-        `<span class="f-size">${fmtBytes(f.s || 0)}</span><span class="f-act">` +
-        `<a href="${escHtml(filesUrl)}" target="_blank" rel="noopener">预览</a>` +
-        `<a href="${escHtml(filesUrl)}&download=1" download>下载</a></span></li>`;
+      const key = typeof f.k === 'string' ? f.k : '';
+      const filesUrl = `/api/tree2/files/${encodeURIComponent(year)}?k=${encodeURIComponent(key)}&n=${encodeURIComponent(f.n)}`;
+      const ext = path.extname(key || f.n).toLowerCase();
+      const previewUrl = `/s/${key.split('/').map(encodeURIComponent).join('/')}`;
+      const safeName = escHtml(f.n);
+      const preview = key && canSharePreview(ext);
+      const label = preview ? `<a href="${previewUrl}">${safeName}</a>` : safeName;
+      const action = preview ? `<a href="${previewUrl}">${shareIcon('preview')}预览</a>` : '';
+      const download = key ? `<a href="${escHtml(filesUrl)}&download=1" download>${shareIcon('download')}下载</a>` : '';
+      return `<li><span class="ico">${shareIcon(shareFileIcon(ext))}</span><span class="f-name">${label}</span>` +
+        `<span class="f-size">${fmtBytes(f.s || 0)}</span><span class="f-act">${action}${download}</span></li>`;
     }),
   ].join('');
 
@@ -932,18 +1055,18 @@ function sendFolderLanding(req, res, { year, segs, node, batch, ancestors = [] }
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-store">
 <title>${escHtml(segs[segs.length - 1])} · 文件夹分享</title>
-<style>${SHARE_PAGE_CSS}</style></head><body><main>
+${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main>
 <div class="card">
-<a class="brand" href="/"><img src="/assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
-<p class="crumb"><a href="/">资料库</a> / ${crumb}</p>
-<p class="kind">文件夹分享 · ${escHtml(year)} 届${batchMeta}</p>
+${shareBrand}
+<p class="crumb"><a href="/">资料库</a> ${shareIcon('chevron')} ${crumb}</p>
+<p class="kind">${shareIcon('folder')}文件夹分享 · ${escHtml(year)} 届${batchMeta}</p>
 <h1>${escHtml(segs[segs.length - 1])}</h1>
 <p class="meta">${countNodeFiles(node)} 个文件${dirs.length ? ` · ${dirs.length} 个子文件夹` : ''} · 共 ${total}</p>
-<a class="down" href="${escHtml(zipUrl)}">⬇ 打包下载全部（zip）</a>
+<a class="down" href="${escHtml(zipUrl)}">${shareIcon('archive')}打包下载全部（zip）</a>
 <p class="hint">整包是未压缩 zip，与资料库逐一对应；单个文件也可以在下面的列表里分别预览/下载，点子文件夹可以继续往下看。</p>
-<ul class="folder-list">${rows || '<li><span class="f-name" style="color:#8a7f6e">这是个空文件夹</span></li>'}</ul>
+<ul class="folder-list">${rows || `<li><span class="ico">${shareIcon('folder')}</span><span class="f-name empty-share">这是个空文件夹</span></li>`}</ul>
 </div>
-<p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
+${shareFooter}
 </main></body></html>`;
   res.writeHead(200, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(html);
@@ -954,11 +1077,12 @@ function sendMissingFolder(req, res, year, removed) {
   if (!removed) return res.end(SHARE_404_HTML);
   const parent = removed.parent;
   const next = parent
-    ? `<a class="down" href="${escHtml(folderLink(year, parent.node, parent.segs))}">打开上级目录</a>`
-    : '<a class="down" href="/">返回资料库</a>';
-  res.end(`<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8">
+    ? `<a class="down" href="${escHtml(folderLink(year, parent.node, parent.segs))}">${shareIcon('up')}打开上级目录</a>`
+    : `<a class="down" href="/">${shareIcon('home')}返回资料库</a>`;
+  res.end(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>原目录已移除</title>
-<style>${SHARE_PAGE_CSS}</style><main><div class="card"><h1>原目录已移除</h1>${next}</div></main></html>`);
+${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main><div class="card">${shareBrand}
+<div class="empty-share">${shareIcon('warning')}</div><h1>原目录已移除</h1>${next}</div>${shareFooter}</main></body></html>`);
 }
 
 route('GET', /^\/d\/id\/(\d{4})\/([^/]+)$/, async (req, res, [, year, id]) => {
@@ -1965,14 +2089,9 @@ route('GET', /^\/$/, async (req, res, m, url) => {
     `<tr><td><a href="${href}">${label}</a></td><td><code>${href.replace(api, '')}</code></td><td>${note}</td></tr>`;
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>tree2 文件服务</title>
-<meta name="color-scheme" content="light dark">
-<script>
-  // 与资料库页共用 tree2.pref 的主题记忆，样式生效前先写好，防白闪
-  try { if (JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch (e) {}
-</script>
+${SHARE_PAGE_THEME}
 <style>
- :root{--paper:#fffaf0;--paper-2:#fdf3dd;--card:#fff;--ink:#1e3a5f;--ink-2:#33506f;--line:#d9cdb5;--line-soft:#ece1ca;--sub:#8a7f6e;--ink-contrast:#fff}
- html[data-theme="dark"]{--paper:#17191d;--paper-2:#262a31;--card:#24272d;--ink:#e9e7e2;--ink-2:#c6cbd4;--line:#3a3f47;--line-soft:#2e3239;--sub:#9aa3ad;--ink-contrast:#17191d}
+ :root{--paper:var(--t2-paper);--card:var(--t2-card);--ink:var(--t2-ink);--line:var(--t2-line);--sub:var(--t2-muted)}
  *{box-sizing:border-box}
  body{margin:0;padding:0 20px 48px;font:14px/1.7 "Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);
       background:radial-gradient(900px 340px at 50% -10%,#fff6e0,rgba(255,246,224,0) 70%),var(--paper);
@@ -1980,27 +2099,20 @@ route('GET', /^\/$/, async (req, res, m, url) => {
  html[data-theme="dark"] body{background:radial-gradient(900px 340px at 50% -10%,#232a36,rgba(35,42,54,0) 70%),var(--paper)}
  .t-top{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;height:52px;
         margin:0 -20px 26px;padding:0 16px;background:rgba(255,250,240,.86);backdrop-filter:blur(10px);
-        border-bottom:1px solid var(--line-soft);transition:background-color .3s ease,border-color .3s ease}
+        border-bottom:1px solid var(--t2-line);transition:background-color .3s ease,border-color .3s ease}
  html[data-theme="dark"] .t-top{background:rgba(23,25,29,.86)}
  .t-brand{font-weight:900;letter-spacing:.04em}
  .t-brand small{font-weight:500;font-size:11px;color:var(--sub);letter-spacing:.18em;margin-left:6px}
  .t-spacer{flex:1}
- .t-link{padding:7px 14px;background:var(--ink);color:var(--ink-contrast);border-radius:9px;text-decoration:none;font-weight:600;font-size:13px}
- .t-toggle{border:0;background:none;cursor:pointer;width:34px;height:34px;border-radius:999px;display:grid;place-items:center;color:var(--ink-2);padding:0}
- .t-toggle:hover{background:rgba(30,58,95,.08)}
- html[data-theme="dark"] .t-toggle:hover{background:rgba(255,255,255,.09)}
- .t-toggle svg{width:17px;height:17px;grid-area:1/1;transition:opacity .28s ease,rotate .34s ease}
- .t-toggle .ico-sun{opacity:0;rotate:100deg}
- html[data-theme="dark"] .t-toggle .ico-sun{opacity:1;rotate:0deg}
- html[data-theme="dark"] .t-toggle .ico-moon{opacity:0;rotate:-100deg}
+ .t-link{padding:7px 14px;background:var(--t2-action);color:var(--t2-action-ink);border-radius:9px;text-decoration:none;font-weight:600;font-size:13px}
  main{max-width:760px;margin:0 auto}
  h1{font-size:24px;margin:0 0 4px}p.deck{color:var(--sub);margin:0 0 24px}
  table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;transition:background-color .3s ease,border-color .3s ease}
- td{padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+ td{padding:9px 12px;border-bottom:1px solid var(--t2-line);vertical-align:top}
  tr:last-child td{border-bottom:0}
  code{font-size:12px;color:var(--sub);word-break:break-all}
  a{color:var(--ink)}
- .big{display:inline-block;margin:0 0 24px;padding:11px 20px;background:var(--ink);color:var(--ink-contrast);border-radius:9px;text-decoration:none}
+ .big{display:inline-block;margin:0 0 24px;padding:11px 20px;background:var(--t2-action);color:var(--t2-action-ink);border-radius:9px;text-decoration:none}
  h2{font-size:15px;margin:26px 0 8px}
  .theme-anim *,.theme-anim body{transition:background-color .32s ease,color .32s ease,border-color .32s ease !important}
 </style></head>
@@ -2009,10 +2121,7 @@ route('GET', /^\/$/, async (req, res, m, url) => {
   <span class="t-brand">tree2 文件服务<small>DEV SERVER</small></span>
   <span class="t-spacer"></span>
   <a class="t-link" href="/tree2/index.html?api=${api}">打开资料库 →</a>
-  <button class="t-toggle" id="theme-toggle" type="button" title="切换亮色/暗色模式" aria-label="切换亮色/暗色模式">
-    <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
-    <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-  </button>
+  ${themeToggle}
 </header>
 <main>
 <h1>tree2 文件服务</h1>
@@ -2032,17 +2141,6 @@ ${row('秒传探测', `/api/tree2/files/${years[years.length - 1] || '2026'}?h=&
 ${row('存储状态', `/api/tree2/storage/${years[years.length - 1] || '2026'}`, '只列真正在盘上的键')}
 </table>
 </main>
-<script>
-  document.getElementById('theme-toggle').onclick = () => {
-    const root = document.documentElement;
-    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    root.classList.add('theme-anim');
-    root.dataset.theme = next;
-    try { const p = JSON.parse(localStorage.getItem('tree2.pref') || '{}'); p.theme = next; localStorage.setItem('tree2.pref', JSON.stringify(p)); } catch (e) {}
-    clearTimeout(window.__t2anim);
-    window.__t2anim = setTimeout(() => root.classList.remove('theme-anim'), 450);
-  };
-</script>
 </body></html>`;
   res.writeHead(200, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(html);
@@ -2114,7 +2212,10 @@ async function tree2Handler(req, res) {
       if (!m) continue;
       return await r.fn(req, res, m, url);
     }
-    if (req.method === 'GET' || req.method === 'HEAD') return await serveStatic(req, res, url.pathname);
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const pathname = /^(?:\/vendor\/|\/js\/(?:theme|preview|wmf-view)\.js$)/.test(url.pathname) ? `/tree2${url.pathname}` : url.pathname;
+      return await serveStatic(req, res, pathname);
+    }
     throw new HttpError(404, '没有这个接口');
   } catch (e) {
     const status = e.status || 500;

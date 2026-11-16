@@ -96,6 +96,11 @@ test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   await copyFile(script, fixtureScript);
   await copyFile(new URL('../scripts/tree2-arrange.mjs', import.meta.url), join(serverDir, 'tree2-arrange.mjs'));
   await copyFile(new URL('../scripts/tree2-folders.mjs', import.meta.url), join(serverDir, 'tree2-folders.mjs'));
+  for (const [directory, file] of [['js', 'theme.js'], ['css', 'theme.css']]) {
+    const fixtureDir = join(root, 'public', 'tree2', directory);
+    await mkdir(fixtureDir, { recursive: true });
+    await copyFile(new URL(`../public/tree2/${directory}/${file}`, import.meta.url), join(fixtureDir, file));
+  }
   await writeFile(faultInjection, `
 import fs from 'node:fs';
 import { Writable } from 'node:stream';
@@ -240,9 +245,19 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const key = `${sha256.slice(0, 2)}/${sha256}.mp3`;
     const audioUrl = origin + '/api/tree2/files/2026?k=' + encodeURIComponent(key);
+    const vinylRoute = `/api/tree2/vinyl/2029/${sha256}.mp3`;
+    const vinylStream = origin + vinylRoute.replace('/2029/', '/2029/share/s/');
     await mkdir(join(store, 'objects', sha256.slice(0, 2)), { recursive: true });
     await writeFile(join(store, 'objects', key), bytes);
     assert.deepEqual(Buffer.from(await (await fetch(audioUrl)).arrayBuffer()), bytes);
+    assert.deepEqual(Buffer.from(await (await fetch(vinylStream)).arrayBuffer()), bytes);
+    const share = await fetch(`${origin}/s/${key}`, { redirect: 'manual' });
+    assert.equal(share.status, 302);
+    assert.equal(share.headers.get('location'), vinylRoute);
+    const document = await fetch(origin + vinylRoute);
+    assert.equal(document.status, 200);
+    assert.equal(document.headers.get('content-security-policy'), "frame-ancestors 'self'");
+    assert.match(await document.text(), /\/music\/share\/assets\/index-7wbOXZOY\.js/);
     const calls = [];
     const upstream = createServer((req, res) => {
       calls.push([req.method, req.headers.range]);
@@ -264,7 +279,10 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
       assert.equal(range.status, 206);
       assert.equal(range.headers.get('content-range'), `bytes 1-2/${bytes.length}`);
       assert.deepEqual(Buffer.from(await range.arrayBuffer()), bytes.subarray(1, 3));
-      assert.deepEqual(calls, [['HEAD', undefined], ['GET', 'bytes=1-2']]);
+      const vinylRange = await fetch(vinylStream, { headers: { Range: 'bytes=1-2' } });
+      assert.equal(vinylRange.status, 206);
+      assert.deepEqual(Buffer.from(await vinylRange.arrayBuffer()), bytes.subarray(1, 3));
+      assert.deepEqual(calls, [['HEAD', undefined], ['GET', 'bytes=1-2'], ['GET', 'bytes=1-2']]);
     } finally {
       upstream.closeAllConnections();
       await new Promise(resolve => upstream.close(resolve));

@@ -6,49 +6,57 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>上传入库 · tree2（管理员）</title>
   <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fffaf0">
+  <script src="js/theme.js?v=20261116-theme"></script>
+  <link rel="stylesheet" href="css/theme.css?v=20261116-theme">
   <style>
     /* 与 tree2 资料库同一套纸张视觉 */
-    body { margin: 0; padding: 40px 18px; font: 15px/1.75 "Microsoft YaHei", "PingFang SC", sans-serif; color: #1e3a5f;
-           background: radial-gradient(900px 340px at 50% -10%, #fff6e0, rgba(255,246,224,0) 70%), #fffaf0; min-height: 100vh; box-sizing: border-box; }
+    body { margin: 0; padding: 40px 18px; font: 15px/1.75 "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--t2-ink);
+           background: radial-gradient(900px 340px at 50% -10%, var(--t2-glow), transparent 70%), var(--t2-paper); min-height: 100vh; box-sizing: border-box; }
     main { max-width: 640px; margin: 0 auto; }
-    .card { background: #fff; border: 1px solid #e8dcc3; border-radius: 14px; padding: 24px; box-shadow: 0 8px 26px rgba(30,58,95,.06); }
-    .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; text-decoration: none; color: #1e3a5f; margin: 0 0 6px; font-size: 15px; }
+    .card { background: var(--t2-card); border: 1px solid var(--t2-line); border-radius: 14px; padding: 24px; box-shadow: var(--t2-shadow); }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; text-decoration: none; color: var(--t2-ink); margin: 0 0 6px; font-size: 15px; }
     .brand img { width: 22px; height: 22px; }
     h1 { font-size: 19px; margin: 0 0 18px; }
-    label { display: block; font-size: 12.5px; color: #8a7f6e; margin: 14px 0 4px; }
+    label { display: block; font-size: 12.5px; color: var(--t2-muted); margin: 14px 0 4px; }
     input[type="password"], input[type="text"], select {
-      width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid #d9cdb5; border-radius: 9px;
-      font: inherit; color: inherit; background: #fffdf6;
+      width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--t2-line); border-radius: 9px;
+      font: inherit; color: inherit; background: var(--t2-field);
     }
     .row { display: flex; gap: 10px; }
     .row > div { flex: 1; min-width: 0; }
-    button { margin-top: 18px; width: 100%; padding: 12px 20px; border: 0; border-radius: 10px; cursor: pointer;
-             background: #1e3a5f; color: #fff; font: 700 15px/1 inherit; font-family: inherit; }
-    button:hover { background: #16314f; }
-    button:disabled { opacity: .55; cursor: default; }
-    .hint { color: #8a7f6e; font-size: 12.5px; margin: 10px 0 0; }
+    button:not([data-theme-toggle]) { margin-top: 18px; width: 100%; padding: 12px 20px; border: 0; border-radius: 10px; cursor: pointer;
+             background: var(--t2-action); color: var(--t2-action-ink); font: inherit; font-weight: 700; }
+    button:not([data-theme-toggle]):hover { background: var(--t2-action-hover); }
+    button:not([data-theme-toggle]):disabled { opacity: .55; cursor: default; }
+    .hint { color: var(--t2-muted); font-size: 12.5px; margin: 10px 0 0; }
     ul { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 8px; }
-    li { border: 1px solid #ece1ca; border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+    li { border: 1px solid var(--t2-line); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
     li .n { font-weight: 600; word-break: break-all; }
-    li .s { color: #8a7f6e; font-size: 12px; margin-top: 2px; }
-    li .bar { height: 5px; border-radius: 3px; background: #f0e8d8; margin-top: 6px; overflow: hidden; }
+    li .s { color: var(--t2-muted); font-size: 12px; margin-top: 2px; }
+    li .bar { height: 5px; border-radius: 3px; background: var(--t2-soft); margin-top: 6px; overflow: hidden; }
     li .bar i { display: block; height: 100%; width: 0; background: #f59e0b; transition: width .2s; }
-    li[data-state="done"] .bar i { background: #2f9e63; }
-    li[data-state="dup"], li[data-state="skip"] { color: #8a7f6e; }
-    li[data-state="error"] { border-color: #e3a1a1; background: #fff7f5; }
-    a { color: #1e3a5f; }
-    .foot { text-align: center; color: #b0a893; font-size: 12px; margin: 16px 0 0; }
+    li[data-state="done"] { background: var(--t2-good-bg); border-color: var(--t2-good-line); }
+    li[data-state="done"] .bar i { background: var(--t2-good); }
+    li[data-state="dup"], li[data-state="skip"] { color: var(--t2-muted); }
+    li[data-state="error"] { border-color: var(--t2-bad-line); background: var(--t2-bad-bg); }
+    a { color: var(--t2-ink); }
+    .foot { text-align: center; color: var(--t2-muted); font-size: 12px; margin: 16px 0 0; }
   </style>
 </head>
 <body>
 <main>
   <div class="card">
-    <a class="brand" href="/"><img src="assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
+    <div class="t2-theme-header">
+      <a class="brand" href="/"><img src="assets/paw.svg" alt="">备考资料导航 <small>TREE2</small></a>
+      <button class="t2-theme-switch" type="button" data-theme-toggle aria-label="切换至暗色"><svg class="t2-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg><svg class="t2-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+    </div>
     <h1>上传入库（管理员）</h1>
 
     <label for="token">上传口令（TREE2_TOKEN，保存在本浏览器）</label>
     <input type="password" id="token" autocomplete="off" placeholder="必填">
-    <p id="gate-hint" role="status" style="margin:10px 0 0;color:#8a7f6e;font-size:13px">请输入管理员上传口令</p>
+    <p id="gate-hint" role="status" style="margin:10px 0 0;color:var(--t2-muted);font-size:13px">请输入管理员上传口令</p>
 
     <div class="row t2-gated" hidden>
       <div>
@@ -59,7 +67,7 @@
         <label for="batch">批次（挂到这个目录下）</label>
         <select id="batch"></select>
         <input type="text" id="newbatch" placeholder="例如：B5厦门二检（2026.11）…" style="display:none" autocomplete="off">
-        <button type="button" id="toggle-new" style="margin-top:6px;padding:6px 10px;width:auto;font:600 12px/1 inherit;background:#f0e8d8;color:#1e3a5f">＋ 新建批次</button>
+        <button type="button" id="toggle-new" style="margin-top:6px;padding:6px 10px;width:auto;font:600 12px/1 inherit;background:var(--t2-soft);color:var(--t2-ink)">＋ 新建批次</button>
       </div>
     </div>
     <label class="t2-gated" hidden for="sub">子目录（可选，多个用 / 分隔）</label>
@@ -84,7 +92,7 @@
       <button type="button" id="nb-create" style="margin:0;width:auto;padding:8px 12px;font-size:12px">新建</button>
     </div>
     <label>一次性口令（勾选批次，可选次数 / 时效限制）</label>
-    <div id="ct-batches" style="max-height:150px;overflow:auto;border:1px solid #e8dcc3;border-radius:9px;padding:8px;font-size:12.5px"></div>
+    <div id="ct-batches" style="max-height:150px;overflow:auto;border:1px solid var(--t2-line);border-radius:9px;padding:8px;font-size:12.5px"></div>
     <div class="row" style="margin-top:8px">
       <div><label style="margin:6px 0 2px">次数上限（空 = 不限）</label><input type="text" id="ct-uses" placeholder="如 5"></div>
       <div><label style="margin:6px 0 2px">有效小时数（空 = 永久）</label><input type="text" id="ct-ttl" placeholder="如 48"></div>
@@ -97,7 +105,7 @@
   <div class="card t2-gated" hidden style="margin-top:18px" id="stats-card">
     <h1 style="font-size:16px">热门资料（按下载/浏览次数）</h1>
     <ol id="stats" style="margin:10px 0 0;padding-left:20px;font-size:13px">
-      <li style="color:#8a7f6e">载入中…（需要口令）</li>
+      <li style="color:var(--t2-muted)">载入中…（需要口令）</li>
     </ol>
     <p class="hint" style="margin-top:8px">计数来自分享落地页的浏览和各处下载；只保留前 50 名。</p>
   </div>
@@ -118,10 +126,13 @@
     <ol id="del-files" style="margin:12px 0 0;padding-left:20px;font-size:13px"></ol>
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
       <button type="button" id="ren-batch-btn" style="padding:8px 12px;width:auto;font:600 13px/1 inherit;border-radius:10px">✏️ 重命名批次</button>
-      <button type="button" id="del-batch-btn" style="background:#a33;border-radius:10px;font-size:13px">删除整个批次</button>
+      <button type="button" id="del-batch-btn" style="background:var(--t2-bad-bg);color:var(--t2-bad);border:1px solid var(--t2-bad-line);border-radius:10px;font-size:13px">删除整个批次</button>
     </div>
   </div>
   <p class="foot"><a href="/">福建高考备考资料导航 tree2</a></p>
+  <footer style="padding:24px 8px;text-align:center;font-size:12px">
+    © 2026 备考资料导航 · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a>
+  </footer>
 </main>
 
 <script src="vendor/sha256.umd.min.js"></script>
@@ -221,13 +232,13 @@
         var mkBtn = function (label, color) {
           var b = document.createElement('button');
           b.type = 'button'; b.textContent = label;
-          b.style.cssText = 'margin:0 0 0 6px;padding:2px 8px;width:auto;font-size:11px;background:#fff;border:1px solid #d9cdb5;border-radius:6px;color:' + color + ';cursor:pointer';
+          b.style.cssText = 'margin:0 0 0 6px;padding:2px 8px;width:auto;font-size:11px;background:var(--t2-card);border:1px solid var(--t2-line);border-radius:6px;color:' + color + ';cursor:pointer';
           return b;
         };
-        var cp = mkBtn('复制链接', '#1e3a5f');
+        var cp = mkBtn('复制链接', 'var(--t2-ink)');
         cp.addEventListener('click', function () { copyTxt(location.origin + '/customer.html?token=' + t.token, cp); });
         li.appendChild(cp);
-        var del = mkBtn('吊销', '#a33');
+        var del = mkBtn('吊销', 'var(--t2-bad)');
         del.addEventListener('click', function () {
           if (!confirm('吊销这个口令？用它的同学将无法再上传。')) return;
           fetch('/api/tree2/ctoken/' + t.id, { method: 'DELETE', headers: { 'X-Tree2-Token': token() } })
@@ -342,10 +353,10 @@
     var ol = document.getElementById('stats');
     if (!ol) return;
     if (!t) {
-      ol.innerHTML = '<li style="color:#8a7f6e">在上方填好口令后，排行会自动出现</li>';
+      ol.innerHTML = '<li style="color:var(--t2-muted)">在上方填好口令后，排行会自动出现</li>';
       return;
     }
-    ol.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
+    ol.innerHTML = '<li style="color:var(--t2-muted)">载入中…</li>';
     fetch('/api/tree2/stats', { headers: { 'X-Tree2-Token': t } })
       .then(function (r) {
         if (!r.ok) throw new Error(r.status === 401 ? '口令不对：检查是否复制完整' : 'HTTP ' + r.status);
@@ -353,7 +364,7 @@
       })
       .then(function (d) {
         if (!d.rows || !d.rows.length) {
-          ol.innerHTML = '<li style="color:#8a7f6e">还没有统计数据（浏览/下载后会自动累计）</li>';
+          ol.innerHTML = '<li style="color:var(--t2-muted)">还没有统计数据（浏览/下载后会自动累计）</li>';
           return;
         }
         ol.innerHTML = d.rows.map(function (x) {
@@ -362,7 +373,7 @@
         }).join('');
       })
       .catch(function (e) {
-        ol.innerHTML = '<li style="color:#8a7f6e">载入失败：' + String(e && e.message || e) + '</li>';
+        ol.innerHTML = '<li style="color:var(--t2-muted)">载入失败：' + String(e && e.message || e) + '</li>';
       });
   }
 
@@ -555,10 +566,10 @@
 
     function loadDelFiles() {
       if (!t()) { alert('先填上方口令'); return; }
-      dFiles.innerHTML = '<li style="color:#8a7f6e">载入中…</li>';
+      dFiles.innerHTML = '<li style="color:var(--t2-muted)">载入中…</li>';
       fetch('/api/tree2/seasons/' + encodeURIComponent(dYear.value)).then(function (r) { return r.json(); }).then(function (m) {
         var b = (m.batches || []).find(function (x) { return x.name === dBatch.value; });
-        if (!b) { dFiles.innerHTML = '<li style="color:#8a7f6e">清单里找不到这个批次（可能刚改过名或换了届别，点上面按钮重新载入）</li>'; return; }
+        if (!b) { dFiles.innerHTML = '<li style="color:var(--t2-muted)">清单里找不到这个批次（可能刚改过名或换了届别，点上面按钮重新载入）</li>'; return; }
         var rows = [];
         var walk = function (n, p2) {
           (n.c || []).forEach(function (c) {
@@ -572,9 +583,9 @@
           });
         };
         walk(b.tree, b.name);
-        if (!rows.length) { dFiles.innerHTML = '<li style="color:#8a7f6e">批次已存在，但还没有文件（预建的空批次；顾客上传或本地放入后重新载入即可看到）</li>'; return; }
+        if (!rows.length) { dFiles.innerHTML = '<li style="color:var(--t2-muted)">批次已存在，但还没有文件（预建的空批次；顾客上传或本地放入后重新载入即可看到）</li>'; return; }
         dFiles.innerHTML = '';
-        var btnCss = 'margin:0 0 0 6px;padding:3px 10px;width:auto;font:600 11px/1.4 inherit;border:1px solid #d9cdb5;border-radius:6px;background:#fff;cursor:pointer;color:#1e3a5f';
+        var btnCss = 'margin:0 0 0 6px;padding:3px 10px;width:auto;font:600 11px/1.4 inherit;border:1px solid var(--t2-line);border-radius:6px;background:var(--t2-card);cursor:pointer;color:var(--t2-ink)';
         // 子目录行（去重）：改名直接作用于目录
         var dirs = [];
         rows.forEach(function (r0) {
@@ -628,7 +639,7 @@
           });
           dFiles.appendChild(li);
         });
-      }).catch(function (e) { dFiles.innerHTML = '<li style="color:#8a7f6e">载入失败：' + esc(e.message) + '</li>'; });
+      }).catch(function (e) { dFiles.innerHTML = '<li style="color:var(--t2-muted)">载入失败：' + esc(e.message) + '</li>'; });
     }
 
     function rename(payload) {

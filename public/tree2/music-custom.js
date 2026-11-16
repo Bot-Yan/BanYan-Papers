@@ -16,6 +16,12 @@
   if (window.__t2ND) return;
   window.__t2ND = true;
 
+  if (!window.tree2Theme && document.currentScript && document.currentScript.src) {
+    var themeScript = document.createElement('script');
+    themeScript.src = new URL('js/theme.js?v=20261116-theme', document.currentScript.src).href;
+    document.head.appendChild(themeScript);
+  }
+
   var STEP = 15;
   var ASSET = '/assets/';
   var FAVICON = '/assets/facivon.svg';
@@ -25,8 +31,17 @@
   // 点过桌宠右上角的 × 之后记在这里，之后就不再挂载；想恢复：控制台执行
   // localStorage.removeItem('t2PetOff') 再刷新。
   var PET_OFF_KEY = 't2PetOff';
-  var IS_MUSIC = location.pathname.indexOf('/music/') === 0;
-  var IS_SHARE = location.pathname.indexOf('/share/') !== -1;
+  var vinyl = /^\/api\/tree2\/vinyl\/(\d{4})\/([a-f0-9]{64}\.[a-z0-9]+)$/.exec(location.pathname);
+  var IS_MUSIC = Boolean(vinyl) || location.pathname.indexOf('/music/') === 0;
+  var IS_SHARE = Boolean(vinyl) || location.pathname.indexOf('/share/') !== -1;
+  var parentOrigin = '';
+  if (IS_SHARE && window.parent !== window && new URLSearchParams(location.search).has('t2embed')) {
+    try { parentOrigin = new URL(document.referrer).origin; } catch (e) {}
+  }
+
+  function sendPlayerMessage(type, details) {
+    if (parentOrigin) window.parent.postMessage(Object.assign({ tree2Player: type }, details), parentOrigin);
+  }
 
   var lastAudio = null;
   var playing = false;
@@ -109,9 +124,14 @@
 
   var pet = null;
   var petClose = null;
+  var reportedPlaying;
 
   function paint() {
     var on = isPlaying();
+    if (parentOrigin && on !== reportedPlaying && document.querySelector('.react-jinke-music-player-mobile')) {
+      reportedPlaying = on;
+      sendPlayerMessage('state', { playing: on });
+    }
     setPet(on ? 'play' : 'idle');
     var discs = document.querySelectorAll('.t2-nd-disc');
     for (var i = 0; i < discs.length; i++) discs[i].classList.toggle('is-playing', on);
@@ -132,7 +152,8 @@
    * 所以这里把文字画进 <svg><text>，元素类型和邻居一致，对齐规则就天然相同。
    */
   function makeSkipSpan(step) {
-    var s = document.createElement('span');
+    var s = document.createElement('button');
+    s.type = 'button';
     s.className = 'group t2-nd-ctrl t2-nd-skip';
     s.dataset.skip = String(step);
     s.title = (step < 0 ? '后退' : '前进') + STEP + '秒';
@@ -153,6 +174,18 @@
   }
 
   function integrateSkip() {
+    var transport = document.querySelector('.react-jinke-music-player-mobile-toggle');
+    if (transport) {
+      var left = transport.querySelector('.prev-audio') || transport.querySelector('.play-btn');
+      var right = transport.querySelector('.next-audio') || transport.querySelector('.play-btn');
+      if (!left || !right) return;
+      if (!transport.querySelector('[data-skip="-15"]')) left.before(makeSkipSpan(-STEP));
+      if (!transport.querySelector('[data-skip="15"]')) right.after(makeSkipSpan(STEP));
+      transport.classList.add('t2-nd-transport');
+      return;
+    }
+    // 分享页的播放条异步挂载。等待真实控件，避免把顶栏的「收起播放器」误认成播放键。
+    if (IS_SHARE) return;
     if (!document.querySelector('.t2-nd-skip')) {
       var prev = findControl('prev');
       var next = findControl('next');
@@ -177,10 +210,13 @@
 
   /* ---------------- 倍速 | 音量 | 收藏：进度条上方的一行 ---------------- */
 
-  /** 收藏键只对本地文件显示：local-<sha256>.<ext> 能还原出 tree2 的存储键 */
+  /** 资料库分享会传入存储键；本地示例也可以从分享 ID 还原。 */
   function favKeyFromLocation() {
+    if (vinyl) return vinyl[2].slice(0, 2) + '/' + vinyl[2];
+    var key = new URLSearchParams(location.search).get('t2file');
+    if (key && /^[a-f0-9]{2}\/[a-f0-9]{64}\.[a-z0-9]{1,8}$/.test(key) && key.slice(0, 2) === key.slice(3, 5)) return key;
     var m = /\/music\/share\/([^/?#]+)/.exec(location.pathname);
-    var id = m && decodeURIComponent(m[1]);
+    var id = m && m[1];
     var mm = id && /^local-([0-9a-f]{64})(\.[a-z0-9]{1,8})$/i.exec(id);
     return mm ? mm[1].slice(0, 2) + '/' + mm[1] + mm[2] : null;
   }
@@ -192,6 +228,7 @@
   function favToggle(k) {
     var arr = [];
     try { arr = JSON.parse(localStorage.getItem('tree2.fav') || '[]'); } catch (e) {}
+    if (!Array.isArray(arr)) arr = [];
     var i = arr.indexOf(k);
     if (i === -1) arr.push(k);
     else arr.splice(i, 1);
@@ -203,13 +240,14 @@
   function makeFavSpan() {
     var k = favKeyFromLocation();
     if (!k) return null;
-    var s = document.createElement('span');
+    var s = document.createElement('button');
+    s.type = 'button';
     s.className = 'group t2-nd-ctrl t2-nd-fav';
     s.dataset.k = k;
-    s.setAttribute('role', 'button');
     s.setAttribute('aria-label', '收藏');
     var paint = function (on) {
       s.title = on ? '已收藏，点按取消' : '收藏到本浏览器';
+      s.setAttribute('aria-pressed', String(on));
       s.querySelector('.t2-nd-fav-path').setAttribute('fill', on ? '#e8a838' : 'none');
     };
     s.innerHTML =
@@ -221,7 +259,9 @@
     paint(favHas(k));
     s.addEventListener('click', function (e) {
       e.stopPropagation();
-      paint(favToggle(s.dataset.k));
+      var on = favToggle(s.dataset.k);
+      paint(on);
+      sendPlayerMessage('favorite', { key: s.dataset.k, on: on });
     });
     return s;
   }
@@ -231,8 +271,9 @@
    * 播放条就只剩 ±15s 和播放键，天然居中，不用再垫配重。
    */
   function mountToolsRow() {
-    var progress = document.querySelector('.react-jinke-music-player-mobile-progress');
-    if (!progress || document.querySelector('.t2-nd-tools')) return;
+    var player = document.querySelector('.react-jinke-music-player-mobile');
+    var progress = player && player.querySelector('.react-jinke-music-player-mobile-progress');
+    if (!progress || player.querySelector('.t2-nd-tools')) return;
     var row = document.createElement('div');
     row.className = 't2-nd-tools';
     var fav = makeFavSpan();
@@ -536,12 +577,31 @@
   function mountBack() {
     if (!IS_MUSIC) return;
     if (document.querySelector('.t2-nd-back')) return;
-    var a = document.createElement('a');
-    a.className = 't2-nd-back';
-    a.href = location.pathname.indexOf('/music/share/local-') === 0 ? '/tree2/index.html?api=reset' : '/';
-    a.textContent = '\u2190 \u8d44\u6599\u5e93';
-    a.setAttribute('aria-label', '返回资料库');
-    topBar().appendChild(a);
+    var back = document.createElement(parentOrigin ? 'button' : 'a');
+    back.className = 't2-nd-back';
+    if (parentOrigin) {
+      back.type = 'button';
+      back.classList.add('t2-nd-collapse');
+      back.setAttribute('aria-label', '收起播放器');
+      back.title = '收起播放器';
+      back.innerHTML = '<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 6 6 6-6M6 13l6 6 6-6"/></svg>';
+      back.addEventListener('click', function () { sendPlayerMessage('minimize'); });
+    } else {
+      back.href = vinyl ? '/?s=' + vinyl[1] : location.pathname.indexOf('/music/share/local-') === 0 ? '/tree2/index.html?api=reset' : '/';
+      back.textContent = '\u2190 \u8d44\u6599\u5e93';
+      back.setAttribute('aria-label', '返回资料库');
+    }
+    topBar().appendChild(back);
+  }
+
+  function mountFooter() {
+    if (!IS_SHARE || parentOrigin) return;
+    var player = document.querySelector('.react-jinke-music-player-mobile');
+    if (!player || player.querySelector('.t2-nd-footer')) return;
+    var footer = document.createElement('footer');
+    footer.className = 't2-nd-footer';
+    footer.innerHTML = '<span>© 2026 备考资料导航</span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a>';
+    player.appendChild(footer);
   }
 
   /* ---------------- 宠物 gif（可拖动） ---------------- */
@@ -551,7 +611,9 @@
       var raw = localStorage.getItem('t2PetPos');
       if (raw) return JSON.parse(raw);
     } catch (e) {}
-    return { left: 16, bottom: 96 };
+    return matchMedia('(max-width: 640px), (max-height: 500px)').matches
+      ? { left: 8, bottom: Math.round(window.innerHeight * 0.37) }
+      : { left: 16, bottom: 96 };
   }
 
   function savePetPos(p) {
@@ -713,26 +775,35 @@
 
   /* ---------------- 启动 ---------------- */
 
-  /**
-   * 主题跟 tree2 站内的亮/暗开关走：读同一个 localStorage（tree2.pref.theme），
-   * 不看系统偏好。站里切换时这里靠 storage 事件实时跟上。
-   */
-  function applyTheme() {
-    var dark = false;
-    try {
-      dark = JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark';
-    } catch (e) {}
-    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  function mountThemeToggle() {
+    if (!IS_MUSIC || document.querySelector('.t2-nd-theme')) return;
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 't2-nd-back t2-nd-theme';
+    button.setAttribute('data-theme-toggle', '');
+    button.setAttribute('aria-label', '切换至暗色');
+    button.innerHTML = '<svg class="t2-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg><svg class="t2-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>';
+    topBar().appendChild(button);
+    if (window.tree2Theme) window.tree2Theme.refresh();
   }
 
   function boot() {
-    applyTheme();
     mountBack();
+    mountThemeToggle();
     integrateSkip();
     mountToolsRow();
+    mountFooter();
     mountPet();
     autoPlayOnShare();
     paint();
+    if (IS_SHARE && window.MutationObserver) {
+      new MutationObserver(function () {
+        if (document.querySelector('.react-jinke-music-player-mobile-toggle')) integrateSkip();
+        mountToolsRow();
+        mountFooter();
+        paint();
+      }).observe(document.body, { childList: true, subtree: true });
+    }
     volValue = readVol();
     // 探测结构：播放条通常是异步渲染的，2s / 6s 各看一次
     setTimeout(probe, 2000);
@@ -743,6 +814,7 @@
       mountBack();
       integrateSkip();
       mountToolsRow();
+      mountFooter();
       mountPet();
       paint();
       // Howler 换曲时会重置元素音量，这里持续把用户设定的音量压回去
@@ -760,14 +832,17 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === 'Escape') sendPlayerMessage('minimize');
     if (e.key === 'ArrowLeft') seek(-STEP);
     if (e.key === 'ArrowRight') seek(STEP);
   });
-
-  // 站内点了亮/暗切换，这边实时跟（同源共享 localStorage，storage 事件即通知）
-  window.addEventListener('storage', function (e) {
-    if (!e.key || e.key === 'tree2.pref') applyTheme();
-  });
+  if (parentOrigin) document.addEventListener('click', function (e) {
+    var headerControl = e.target.closest?.('.react-jinke-music-player-mobile-header-right');
+    if (!headerControl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sendPlayerMessage('minimize');
+  }, true);
 
   // 调试口：控制台执行 window.__t2Debug()
   window.__t2Debug = function () {

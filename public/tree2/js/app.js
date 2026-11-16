@@ -7,14 +7,10 @@
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
 import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115b';
-import { kindOf, canRender, extOf, render, disposePdf } from './preview.js?v=20261115g';
+import { kindOf, canRender, extOf, render, disposePdf, disposeWord } from './preview.js?v=20261116-word-fit';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
-// ---------------------------------------------------------------- 主题（亮/暗）
-// 初始值由 index.html 头部的内联脚本先写好（防白闪）；这里只负责点击切换和记忆。
-// 切换时给 <html> 挂 .theme-anim 让全页颜色过渡半秒（CSS 里定义），平时不挂，不拖慢悬停。
-let themeAnimT = 0;
 // ---------------------------------------------------------------- 左栏 / p2 收起
 // 左栏：参考 DevTools console 的抽屉，右下角按钮收起，再点屏幕左下角的按钮展开；记忆在 pref 里。
 // p2：窄屏时搜索框下方的堆叠区（筛选+收藏+树），底部同款收起钮。
@@ -39,18 +35,6 @@ if (p2ToggleBtn) {
     exitMobileSearch();
   };
 }
-
-const themeBtn = $('#theme-toggle');
-if (themeBtn)
-  themeBtn.onclick = () => {
-    const root = document.documentElement;
-    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    root.classList.add('theme-anim');
-    root.dataset.theme = next;
-    pref.set('theme', next);
-    clearTimeout(themeAnimT);
-    themeAnimT = setTimeout(() => root.classList.remove('theme-anim'), 450);
-  };
 
 const state = {
   seasons: [],
@@ -454,7 +438,7 @@ async function boot() {
   // 先把数据服务地址定下来（把 ?api= 记进 localStorage），再解析路由、再发第一个请求。
   // 顺序错了会拿同源地址去要数据，整页直接"连不上"。
   apiBase();
-  readUrl();
+  readUrl(new URLSearchParams(location.search).has('f'));
   placeSearch('bottom');
   if (pref.get('searchHintSeen', false)) $('#search-form')?.classList.add('t2-search-hint-off');
   try {
@@ -467,9 +451,7 @@ async function boot() {
       await openSeason(state.query.s);
       renderSeasons();
       renderAll();
-      // 落地即首页：把地址栏里遗留的 p/q/k/f/#路径 一并抹掉，
-      // 免得用户看到一条"看起来在详情页"的地址，实际内容却是首页。
-      writeUrl(false);
+      if (!restoreViewer()) writeUrl(false);
       pref.set('season', state.query.s);
     } else {
       enterSiteHome();
@@ -1150,64 +1132,110 @@ function fileRow(file, parent, focus, season) {
 // ---------------------------------------------------------------- 预览抽屉
 
 let viewerTicket = 0;
-let currentUrl = null;
+let audioSession;
 
-async function openViewer(file, parent, noPush) {
+function syncMiniPlayer() {
+  $('#mini-player').dataset.playing = String(audioSession?.playing === true);
+}
+
+function stopAudio() {
+  if (!audioSession) return;
+  clearTimeout(audioSession.startup);
+  audioSession.frame.remove();
+  audioSession = null;
+  $('#mini-player').hidden = true;
+}
+
+function showVinylFrame(session, expanded) {
+  const show = expanded && session.ready;
+  session.frame.dataset.expanded = String(show);
+  session.frame.inert = !show;
+}
+
+function mountVinylPlayer(file, parent, season) {
+  const track = encodeURIComponent(file.k.split('/').at(-1));
+  const standalone = new URL(`/api/tree2/vinyl/${encodeURIComponent(season)}/${track}`, apiBase() || location.origin);
+  const frame = document.createElement('iframe');
+  frame.className = 't2-vinyl-frame';
+  frame.title = '黑胶播放器';
+  frame.allow = 'autoplay';
+  frame.referrerPolicy = 'origin';
+  frame.src = `${standalone.href}?t2embed=1`;
+  const session = { frame, file, parent, season, origin: standalone.origin, ready: false, playing: false };
+  session.startup = setTimeout(() => {
+    if (audioSession !== session || session.ready) return;
+    const loading = $('#v-body [data-vinyl-loading]');
+    if (loading) loading.innerHTML = `黑胶播放器没有响应。<br><a class="t2-btn" href="${esc(standalone.href)}" target="_blank" rel="noopener">在新窗口打开</a>`;
+  }, 8000);
+  audioSession = session;
+  showVinylFrame(session, false);
+  $('#vinyl-host').append(frame);
+}
+
+async function openViewer(file, parent, restore = false, season = state.query.s) {
   disposePdf(); // 上一个预览若是 PDF，先把它的内存/监听器释放掉
+  disposeWord();
   const box = $('#viewer');
   if (!box) return;
+  const body = $('#v-body');
   const ticket = ++viewerTicket;
   const isCurrent = () => box.dataset.open === 'true' && ticket === viewerTicket;
   const titleEl = $('#v-title');
   if (titleEl) titleEl.textContent = file.n;
   const k = kindOf(file.n);
+  const sameAudio = audioSession?.season === season && audioSession.file.k === file.k;
+  const online = sameAudio || isOnline(file);
+  const hasAudio = online && k === 'audio';
+  const url = fileUrl(season, file);
+  const downloadUrl = fileUrl(season, file, { download: true });
   const subEl = $('#v-sub');
   if (subEl) subEl.textContent = `${kindLabel(k)} · ${fmtSize(file.s)} · ${parent || '/'}`;
-  bind('#v-down', () => (location.href = fileUrl(state.query.s, file, { download: true })));
+  bind('#v-down', () => (location.href = downloadUrl));
   bind('#v-share', () => doShare(file));
 
-  // 音频且已同步出黑胶页：先探测，命中就直接整页跳转。
-  // 抽屉和历史记录都不能先动——先开抽屉再跳，用户会看到两层遮罩先后盖上来，
-  // 而且回退键落回的是带 ?f= 的那条记录，返回行为就乱了。这里的守卫只比 ticket
-  //（抽屉还没开，dataset.open 可能还是上一次留下的 true，不能算数）。
-  if (isOnline(file) && canRender(file.n) && k === 'audio' && file.k) {
-    try {
-      const r = await fetch(`${apiBase()}/api/tree2/nd-share?k=${encodeURIComponent(file.k)}`, { signal: AbortSignal.timeout?.(5000) });
-      if (r.ok) {
-        const { id } = await r.json();
-        if (id && ticket === viewerTicket) {
-          location.assign(new URL(`/music/share/${encodeURIComponent(id)}`, apiBase() || location.origin));
-          return;
-        }
-      }
-    } catch { /* 接口慢/挂：走下面的内嵌播放器 */ }
+  box.dataset.open = 'true';
+  box.dataset.audio = String(hasAudio);
+  const back = $('#v-close');
+  back.setAttribute('aria-label', hasAudio ? '返回目录' : '关闭预览');
+  back.title = hasAudio ? '收起为悬浮播放器 (Esc)' : '关闭 (Esc)';
+  document.body.style.overflow = 'hidden';
+  if (!restore) {
+    writeUrl(false);
+    const u = new URL(location.href);
+    u.searchParams.set('s', season);
+    u.searchParams.set('f', joinPath(parent, file.n));
+    history.pushState({ t2viewer: true }, '', u);
   }
 
-  box.dataset.open = 'true';
-  document.body.style.overflow = 'hidden';
-  writeUrl(false);
-  const u = new URL(location.href);
-  u.searchParams.set('f', parent ? `${parent}/${file.n}` : file.n);
-  if (noPush) history.replaceState({ t2viewer: true }, '', u);
-  else history.pushState({ t2viewer: true }, '', u); // push 而非 replace：浏览器返回键直接回目录
-
-  if (!isOnline(file)) {
-    $('#v-body').innerHTML = `<div class="pad">这个文件还没有真实的文件入库（只记了目录）。<br>请联系维护者上传，或使用网盘下载。</div>`;
+  if (!online) {
+    body.innerHTML = `<div class="pad">这个文件还没有真实的文件入库（只记了目录）。<br>请联系维护者上传，或使用网盘下载。</div>`;
     return;
   }
 
-  if (canRender(file.n) && (k === 'image' || k === 'audio')) {
-    // 浏览器原生能渲染的，直接给 URL，不下载完整字节（音频还能边下边播）
-    const url = fileUrl(state.query.s, file);
-    currentUrl = url;
-    if (isCurrent()) void render($('#v-body'), url, file.n, { isCurrent });
+  if (hasAudio) {
+    $('#mini-expand').title = file.n;
+    body.innerHTML = '<div class="pad" role="status" data-vinyl-loading>正在打开黑胶播放器…</div>';
+    if (sameAudio) {
+      Object.assign(audioSession, { file, parent });
+    } else {
+      stopAudio();
+      mountVinylPlayer(file, parent, season);
+    }
+    showVinylFrame(audioSession, true);
+    syncMiniPlayer();
+    back.focus({ preventScroll: true });
+    return;
+  }
+
+  if (k === 'image') {
+    void render(body, url, file.n, { isCurrent });
     return;
   }
 
   $('#v-body').innerHTML = `<div class="pad"><div class="t2-progress"><i></i></div><p style="margin-top:12px">正在加载…</p></div>`;
   const bar = $('#v-body .t2-progress i');
   try {
-    const blob = await fetchBytes([fileUrl(state.query.s, file)], {
+    const blob = await fetchBytes([url], {
       onProgress: (got, total) => {
         if (bar && total) bar.style.width = `${Math.min(100, (got / total) * 100)}%`;
       },
@@ -1219,7 +1247,7 @@ async function openViewer(file, parent, noPush) {
     }
     await render($('#v-body'), blob, file.n, { isCurrent });
   } catch (e) {
-    if (isCurrent()) $('#v-body').innerHTML = `<div class="pad">加载失败：${esc(e.message)}<br><button class="t2-btn" type="button" onclick="location.href='${fileUrl(state.query.s, file, { download: true })}'">下载到本地</button></div>`;
+    if (isCurrent()) body.innerHTML = `<div class="pad">加载失败：${esc(e.message)}<br><a class="t2-btn" href="${esc(downloadUrl)}">下载到本地</a></div>`;
   }
 }
 const MAX_BYTES = 80 * 1024 * 1024;
@@ -1228,11 +1256,15 @@ function closeViewer() {
   const box = $('#viewer');
   if (!box || box.dataset.open !== 'true') return; // 幂等：popstate 与手动关闭只走一次
   box.dataset.open = 'false';
+  if (audioSession?.ready) showVinylFrame(audioSession, false);
+  else stopAudio();
   viewerTicket++;
   document.body.style.overflow = '';
   disposePdf(); // 抽屉关了，PDF 的文档和监听器一并释放
-  $('#v-body').innerHTML = '';
-  currentUrl = null;
+  disposeWord();
+  $('#v-body').replaceChildren();
+  $('#mini-player').hidden = !audioSession;
+  if (box.dataset.audio === 'true' && audioSession) $('#mini-expand').focus({ preventScroll: true });
 }
 function closeViewerBack() {
   // UI 关闭走 history.back()：前进键可重开播放器；直接加载（无 push 记录）时原位关闭
@@ -1242,15 +1274,29 @@ function closeViewerBack() {
   if (u.searchParams.has('f')) { u.searchParams.delete('f'); history.replaceState(null, '', u); }
 }
 
+function restoreViewer() {
+  const { f, s } = state.query;
+  if (!f || !state.manifest) return false;
+  const parent = parentOf(f);
+  const name = seg(f).at(-1);
+  const node = parent ? nodeAt(parent) : rootOf();
+  const file = node?.c?.find((child) => child.t === 'f' && child.n === name);
+  if (!file || !isOnline(file)) return false;
+  openViewer(file, parent, true, s);
+  return true;
+}
+
 // ---------------------------------------------------------------- 分享链接
 // 链接是确定性的：/s/<存储键> —— 同一个文件对所有人都是同一个地址，纯客户端拼出来即可。
 // 音频链接会直接 302 到 Navidrome 黑胶页；其余是「预览 + 下载」落地页。
 
-const AUDIO_EXT_RE = /\.(mp3|wav|m4a|ogg|flac|aac)$/i;
-
 // ---- 收藏夹（localStorage，无需登录） ----
 const FAV_LS = 'tree2.fav';
-let favSet = new Set(JSON.parse(localStorage.getItem(FAV_LS) || '[]'));
+const favSet = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem(FAV_LS) || '[]');
+  if (Array.isArray(saved)) for (const key of saved) if (typeof key === 'string') favSet.add(key);
+} catch { /* 无可用收藏记录 */ }
 const favHas = (k) => favSet.has(k);
 function favToggle(k) {
   if (favSet.has(k)) favSet.delete(k);
@@ -1285,7 +1331,7 @@ function copyTextFallback(text, btn) {
   ta.value = text;
   ta.style.position = 'fixed';
   ta.style.opacity = '0';
-  document.body.appendChild(ta);
+  (document.querySelector('dialog[open]') || document.body).appendChild(ta);
   ta.select();
   try {
     document.execCommand('copy');
@@ -1300,44 +1346,51 @@ function copyTextFallback(text, btn) {
 function shareDialog({ name, url, note }) {
   let dlg = $('#share-dlg');
   if (!dlg) {
-    dlg = document.createElement('div');
+    dlg = document.createElement('dialog');
     dlg.id = 'share-dlg';
     dlg.className = 't2-share-dlg';
+    dlg.setAttribute('aria-labelledby', 'share-title');
     dlg.innerHTML = `
       <div class="t2-share-card">
-        <div class="t2-share-title">分享链接</div>
+        <div class="t2-share-head">
+          <h2 class="t2-share-title" id="share-title">分享链接</h2>
+          <button class="t2-btn t2-ico-btn" type="button" data-a="close" aria-label="关闭分享">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
         <div class="t2-share-name"></div>
-        <div class="t2-share-link"><a target="_blank" rel="noopener"></a><button class="t2-btn" type="button" data-a="copy">复制链接</button></div>
+        <div class="t2-share-link">
+          <a target="_blank" rel="noopener"></a>
+          <button class="t2-btn primary" type="button" data-a="copy" autofocus>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+            <span>复制链接</span>
+          </button>
+        </div>
         <div class="t2-share-note"></div>
-        <div style="text-align:right;margin-top:10px"><button class="t2-btn primary" type="button" data-a="close">关闭窗口</button></div>
       </div>`;
     document.body.appendChild(dlg);
-    // 只有点背景或「关闭窗口」才关；复制不许把窗口带走
     dlg.addEventListener('click', (e) => {
-      if (e.target === dlg || e.target.closest('[data-a="close"]')) dlg.dataset.on = 'false';
+      if (e.target === dlg || e.target.closest('[data-a="close"]')) dlg.close();
     });
     dlg.querySelector('[data-a="copy"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      copyText(dlg.querySelector('.t2-share-link a').textContent, e.currentTarget);
+      copyText(dlg.querySelector('.t2-share-link a').href, e.currentTarget.querySelector('span'));
     });
   }
   dlg.querySelector('.t2-share-name').textContent = name;
   const a = dlg.querySelector('.t2-share-link a');
   a.href = url;
   a.textContent = url;
+  a.title = url;
   dlg.querySelector('.t2-share-note').textContent = note;
-  dlg.dataset.on = 'true';
+  if (!dlg.open) dlg.showModal();
 }
 
 /** 单文件分享：/s/<存储键>。 */
 function doShare(file) {
-  const isAudio = AUDIO_EXT_RE.test(extOf(file.n));
   shareDialog({
     name: file.n,
-    url: `${location.origin}/s/${file.k}`,
-    note: isAudio
-      ? '这个链接会直接打开在线播放页（黑胶）。同一份资料所有人拿到的都是同一个链接。'
-      : '这个链接打开就是这份资料的预览/下载页。同一份资料所有人拿到的都是同一个链接。',
+    url: `${apiBase() || location.origin}/s/${file.k}`,
+    note: kindOf(file.n) === 'audio' ? '打开链接即可在线播放。' : '打开链接即可预览或下载文件。',
   });
 }
 
@@ -1348,7 +1401,7 @@ function shareFolder(folderPath) {
   shareDialog({
     name: folderPath,
     url: `${apiBase() || location.origin}${path}`,
-    note: '这个链接打开就是文件夹的清单页——里面每个文件都能预览/下载，子文件夹可以继续点进去。同一文件夹所有人拿到的都是同一个链接。',
+    note: '打开链接即可浏览这个文件夹和下载资料。',
   });
 }
 
@@ -1405,7 +1458,7 @@ function wire() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if (!search) return;
+    if (!search || $('#share-dlg')?.open) return;
     if (e.key === '/' && document.activeElement !== search && !/input|textarea/i.test(document.activeElement.tagName)) {
       e.preventDefault();
       search.focus();
@@ -1445,30 +1498,41 @@ function wire() {
   });
 
   bind('#v-close', closeViewerBack);
+  bind('#mini-expand', () => {
+    if (!audioSession) return;
+    const { file, parent, season } = audioSession;
+    openViewer(file, parent, false, season);
+  });
+  bind('#mini-close', stopAudio);
+  window.addEventListener('message', (e) => {
+    const session = audioSession;
+    if (!session || e.origin !== session.origin || e.source !== session.frame.contentWindow) return;
+    const type = e.data?.tree2Player;
+    if (type === 'state') {
+      session.ready = true;
+      clearTimeout(session.startup);
+      session.playing = e.data.playing === true;
+      const viewer = $('#viewer');
+      showVinylFrame(session, viewer.dataset.open === 'true' && viewer.dataset.audio === 'true');
+      syncMiniPlayer();
+    }
+    if (type === 'minimize' && session.frame.dataset.expanded === 'true') closeViewerBack();
+    if (type === 'favorite' && e.data.key === session.file.k) {
+      if (e.data.on === true) favSet.add(e.data.key);
+      else favSet.delete(e.data.key);
+      renderMain();
+    }
+  });
 
   window.addEventListener('popstate', async () => {
     if ($('#viewer')?.dataset.open === 'true') closeViewer(); // 返回键关闭播放器
-    readUrl(true); // 前进后退要恢复路径；首次加载才回首页
-    // 前进到 ?f= 链接：重新打开播放器（back/forward 全闭环）
-    if (state.query.f) {
-      const fParts = state.query.f.split('/');
-      const fName = fParts.pop();
-      const fParent = fParts.join('/');
-      const pNode = fParent ? nodeAt(fParent) : rootOf();
-      const fFile = pNode && (pNode.c || []).find((c) => c.t === 'f' && c.n === fName);
-      if (fFile && isOnline(fFile)) {
-        openViewer(fFile, fParent, true); // 恢复模式：replaceState 不新增历史
-        renderSeasons();
-        return;
-      }
-    }
-    renderSeasons();
+    readUrl(true);
     // 后退到站点主页（地址没有 ?s=）
     if (!new URLSearchParams(location.search).get('s')) {
       enterSiteHome();
       return;
     }
-    if (String(state.season?.id) !== state.query.s) {
+    if (!state.manifest || String(state.season?.id) !== state.query.s) {
       try {
         await openSeason(state.query.s);
       } catch (e) {
@@ -1477,8 +1541,8 @@ function wire() {
       }
     }
     leaveSiteHome();
-    renderTree();
-    renderMain();
+    renderAll();
+    if (state.query.f && !restoreViewer()) writeUrl(false);
   });
 }
 

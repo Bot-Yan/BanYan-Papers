@@ -14,7 +14,7 @@
   --ink-contrast: #fff;
   --line: #d9cdb5;
   --line-soft: #ece1ca;
-  --sub: #8a7f6e;
+  --sub: var(--t2-muted);
   --red: #e8503a;
   --blue: #3b82f6;
   --amber: #f59e0b;
@@ -61,8 +61,9 @@ button { font: inherit; color: inherit; }
 .t2-brand img { width: 24px; height: 24px; }
 .t2-brand small { font: 500 11px/1 var(--sans); letter-spacing: .18em; color: var(--sub); }
 
-.t2-seasons { display: flex; align-items: center; gap: 4px; padding: 3px; background: var(--paper-2); border-radius: 999px; }
-.t2-season { padding: 5px 12px; border: 0; background: none; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--ink-2); }
+.t2-seasons { display: flex; align-items: center; min-width: 0; gap: 4px; padding: 3px; background: var(--paper-2); border-radius: 999px; overflow-x: auto; scrollbar-width: none; }
+.t2-seasons:empty { display: none; }
+.t2-season { flex: none; white-space: nowrap; padding: 5px 12px; border: 0; background: none; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--ink-2); }
 .t2-season[aria-current="true"] { background: var(--ink); color: var(--ink-contrast); }
 .t2-season:disabled { opacity: .38; cursor: not-allowed; }
 
@@ -200,6 +201,8 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 /* 右：阅读区 */
 .t2-main { min-width: 0; overflow: auto; scroll-behavior: smooth; }
 .t2-main > * { max-width: 1180px; margin-inline: auto; padding-inline: clamp(14px, 3vw, 36px); }
+.t2-site-footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; padding-block: 28px 20px; font-size: 12px; color: var(--sub); }
+.t2-site-footer a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
 
 .t2-hero { padding-top: 26px; padding-bottom: 18px; border-bottom: 3px double var(--ink); }
 .t2-kicker { font: 500 11px/1 var(--sans); letter-spacing: .22em; color: var(--sub); text-transform: uppercase; margin-bottom: 10px; }
@@ -255,11 +258,7 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 .t2-file-sub { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--sub); }
 .t2-file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
 .t2-tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--paper-2); color: var(--ink-2); }
-/* 收起钮：搜索框外面、下方一点点，右对齐（不占一整行的视觉，只探出一个小圆钮） */
-.t2-side-headrow {
-  display: none; position: absolute; right: 12px; top: 56px; margin: 0;
-  /* top 56 = 搜索框(46+8) + chips 相对偏移(58) - (按钮30-chips27)/2，和 chips 行垂直居中 */
-}
+.t2-p2-toggle { display: none; }
 .t2-tag.ok { background: #e7f7ef; color: #18794e; }
 .t2-tag.wait { background: #fbeff2; color: #a13652; }
 .t2-file-act { display: flex; gap: 6px; }
@@ -325,62 +324,48 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 /* 预览标题栏的三个图标按钮：统一 36×36，图形 18px */
 .t2-ico-btn { width: 36px; height: 36px; padding: 0; justify-content: center; flex: none; }
 .t2-ico-btn svg { width: 18px; height: 18px; display: block; }
+.t2-preview-back-icon,
+.t2-viewer[data-audio="true"] .t2-preview-close-icon { display: none; }
+.t2-viewer[data-audio="true"] .t2-preview-back-icon { display: inline; }
 .t2-viewer-body { overflow: auto; padding: 18px; display: grid; place-items: start center; }
 .t2-viewer-body .pad { padding: 40px; text-align: center; color: var(--v-sub); }
 .t2-viewer-body img.t2-img { max-width: min(100%, 1100px); height: auto; background: #fff; border-radius: 6px; }
 .t2-viewer-body .t2-pdf { display: grid; gap: 14px; justify-items: center; width: 100%; }
 .t2-viewer-body .t2-pdf .t2-pdfpage { background: #fff; box-shadow: 0 4px 24px rgba(0, 0, 0, .45); border-radius: 2px; }
 .t2-viewer-body .t2-pdf canvas { display: block; max-width: 100%; height: auto; }
-.t2-viewer-body .t2-doc { background: #fff; color: #222; border-radius: 6px; padding: 8px; max-width: 100%; overflow: auto; }
-.t2-viewer-body .t2-doc .docx-wrapper { background: transparent; padding: 0; }
-.t2-viewer-body .t2-doc .docx-wrapper > section.docx { box-shadow: var(--v-page-shadow); margin-bottom: 14px; }
-.t2-viewer-body .t2-audio { width: min(680px, 100%); padding: 26px; background: #fff; color: var(--ink); border-radius: 12px; display: grid; gap: 14px; }
-.t2-viewer-body .t2-audio audio { width: 100%; }
-
-/* ---------------------------------------------------------- 音频播放器（Navidrome 风格） */
-.t2-player {
-  width: min(680px, 100%);
-  background: linear-gradient(160deg, #24272d 0%, #17191d 100%);
-  border: 1px solid #3a3f47; border-radius: 16px;
-  padding: 16px; display: grid; grid-template-columns: 132px minmax(0, 1fr);
-  gap: 16px; align-items: center; color: #eef1f5;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, .35);
+.t2-viewer-body .t2-doc { width: 100%; min-width: 0; overflow-x: auto; background: #fff; color: #222; color-scheme: light; }
+.t2-viewer-body .t2-doc .docx-wrapper { width: max-content; margin-inline: auto; background: transparent; padding: 0; }
+.t2-viewer-body .t2-doc .docx-wrapper > section.docx { box-sizing: border-box; box-shadow: var(--v-page-shadow); margin-bottom: 14px; }
+.t2-vinyl-frame {
+  position: fixed; inset: 0; z-index: 81; width: 100%; height: 100%; border: 0;
+  background: var(--paper); visibility: hidden; pointer-events: none;
 }
-.t2-pl-art { position: relative; width: 132px; height: 132px; border-radius: 12px; overflow: hidden; background: #0e1014; }
-/* 没放 pet.gif 时的占位：居中音符。往 assets/ 放 pet.gif 就自动换成自定义封面 */
-.t2-pl-note { position: absolute; inset: 0; display: grid; place-items: center; font-size: 44px; color: rgba(255, 255, 255, .18); }
-.t2-pl-idle { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #0e1014; transition: opacity .25s ease; }
-.t2-player.is-playing .t2-pl-idle { opacity: .55; }
-/* 加载/缓冲时盖一层：CSS 转圈（以前用 0.5 MB 的动图，已省） */
-.t2-pl-loading { position: absolute; inset: 0; display: none; place-items: center; align-content: center; gap: 8px; background: rgba(8, 10, 14, .5); backdrop-filter: blur(2px); z-index: 2; }
-.t2-player[data-loading="true"] .t2-pl-loading { display: grid; }
-.t2-pl-spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, .18); border-top-color: #7fd6ff; animation: t2-pl-spin .8s linear infinite; }
-.t2-pl-loading span { font-size: 10.5px; color: #cfd6de; letter-spacing: .14em; }
-@keyframes t2-pl-spin { to { rotate: 360deg; } }
-.t2-pl-panel { min-width: 0; display: grid; gap: 8px; }
-.t2-pl-title { font: 700 15px/1.4 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t2-pl-sub { font-size: 12px; color: #9aa3ad; font-variant-numeric: tabular-nums; }
-.t2-pl-seek { position: relative; display: block; width: 100%; height: 22px; background: none; border: 0; padding: 0; cursor: pointer; }
-.t2-pl-seek::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 4px; translate: 0 -50%; background: #333941; border-radius: 999px; }
-.t2-pl-buf, .t2-pl-fill { position: absolute; left: 0; top: 50%; height: 4px; translate: 0 -50%; border-radius: 999px; width: 0; }
-.t2-pl-buf { background: #4a515b; }
-.t2-pl-fill { background: linear-gradient(90deg, #56c2f5, #8fe0ff); }
-.t2-pl-knob { position: absolute; top: 50%; left: 0; width: 12px; height: 12px; translate: -50% -50%; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px rgba(126, 214, 255, .22); }
-.t2-pl-ctl { display: flex; align-items: center; gap: 12px; }
-.t2-pl-play {
-  width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer; flex: none;
-  background: linear-gradient(160deg, #7fd6ff, #4aaee0); color: #08131a;
-  font-size: 16px; line-height: 1; display: grid; place-items: center;
-  box-shadow: 0 6px 18px rgba(90, 190, 240, .28);
+.t2-vinyl-frame[data-expanded="true"] { visibility: visible; pointer-events: auto; }
+.t2-mini-player {
+  position: fixed; z-index: 65; inset-inline-end: max(14px, env(safe-area-inset-right));
+  bottom: calc(14px + env(safe-area-inset-bottom));
 }
-.t2-pl-play:active { transform: scale(.96); }
-.t2-pl-vol-ico { font-size: 13px; opacity: .7; }
-.t2-pl-vol { flex: 1; max-width: 160px; accent-color: #7fd6ff; }
-.t2-audio-el { display: none; }
-.t2-viewer-body pre.t2-text { width: min(980px, 100%); min-height: 100%; box-sizing: border-box; margin: 0; padding: 16px; background: #fff; color: #222; border-radius: 8px; font: 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
-.t2-viewer-body .t2-sheet { width: min(1100px, 100%); background: #fff; color: #222; border-radius: 8px; padding: 10px; overflow: auto; }
+.t2-mini-player[hidden], .t2-viewer[data-open="true"] ~ .t2-mini-player { display: none; }
+.t2-mini-expand {
+  display: grid; place-items: center; width: 56px; height: 56px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--card);
+  cursor: pointer; box-shadow: var(--shadow);
+}
+.t2-mini-expand img { display: block; border-radius: 50%; animation: t2-mini-spin 8s linear infinite paused; }
+.t2-mini-player[data-playing="true"] img { animation-play-state: running; }
+.t2-mini-close {
+  position: absolute; inset-block-start: -6px; inset-inline-end: -6px;
+  display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%; color: var(--ink);
+  background: var(--card); cursor: pointer; box-shadow: var(--shadow);
+}
+.t2-mini-close svg { width: 16px; height: 16px; }
+@keyframes t2-mini-spin { to { rotate: 1turn; } }
+@media (prefers-reduced-motion: reduce) { .t2-mini-expand img { animation: none; } }
+.t2-viewer-body pre.t2-text { width: min(980px, 100%); min-height: 100%; box-sizing: border-box; margin: 0; padding: 16px; background: var(--t2-field); color: var(--t2-ink); border-radius: 8px; font: 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.t2-viewer-body .t2-sheet { width: min(1100px, 100%); background: var(--t2-card); color: var(--t2-ink); border-radius: 8px; padding: 10px; overflow: auto; }
 .t2-viewer-body .t2-sheet table { border-collapse: collapse; font-size: 12.5px; }
-.t2-viewer-body .t2-sheet td, .t2-viewer-body .t2-sheet th { border: 1px solid #ddd; padding: 3px 8px; white-space: nowrap; }
+.t2-viewer-body .t2-sheet td, .t2-viewer-body .t2-sheet th { border: 1px solid var(--t2-line); padding: 3px 8px; white-space: nowrap; }
 
 .t2-progress { width: 260px; height: 4px; border-radius: 4px; background: #3a3f47; overflow: hidden; }
 .t2-progress i { display: block; height: 100%; width: 0; background: var(--amber); transition: width .2s; }
@@ -396,7 +381,7 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 
 .t2-uploads {
   position: fixed; right: 16px; bottom: 16px; z-index: 70; width: min(420px, calc(100vw - 32px));
-  background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
   display: none;
 }
 .t2-uploads[data-on="true"] { display: block; }
@@ -444,8 +429,16 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
   body.t2-searching .t2-start { display: none; }
   .t2-menu { display: none !important; }
   .t2-tree-toggle { display: none !important; } /* 窄屏没有左栏，用 p2 自己的收起钮 */
-  /* TREE2 字样不再按断点隐藏：待机时顶栏大量留白，没理由藏品牌名。
-     真正放不下的是搜索框归位/搜索态，那条路已有 body.search-undocked 的收缩规则。 */
+  .t2-top {
+    height: auto; min-height: var(--head-h); gap: 6px 8px;
+    display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content;
+    padding: 5px max(8px, env(safe-area-inset-right)) 5px max(8px, env(safe-area-inset-left));
+  }
+  .t2-brand { grid-column: 1; gap: 5px; font-size: 13px; letter-spacing: 0; }
+  .t2-brand small { display: none; }
+  .t2-seasons { grid-column: 2; justify-self: start; max-width: 100%; }
+  .t2-season { min-height: 36px; padding: 3px 9px; }
+  .t2-top > .t2-search { grid-column: 1 / -1; grid-row: 2; min-width: 0; max-width: none; margin: 0; }
   .t2-search kbd { display: none; }
 
   /* 待机：搜索框钉在页面底部（距底约 20px） */
@@ -476,8 +469,8 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
     flex: none; width: auto; max-width: none; margin: 0 0 8px; padding: 0;
     background: none;
   }
-  body.t2-searching .t2-side-headrow { display: flex; }
-  body.t2-searching .t2-chips { padding-right: 34px; } /* 给右侧的收起钮留位 */
+  body.t2-searching .t2-filters { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+  body.t2-searching #fav-entry { grid-column: 1 / -1; }
   body.t2-searching .t2-side > .t2-search-hero input { height: 46px; font-size: 16px; box-shadow: none; border-color: var(--ink); }
   body.t2-searching .t2-side > .t2-search-hero .t2-search-ico { left: 16px; }
   /* 搜索时文件列表也让位：结果直接就是下面那棵树 */
@@ -486,15 +479,8 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 
   .t2-side .t2-tree { flex: none; overflow: visible; height: auto; }
 
-  /* 归位模式：窄屏顶栏空间紧张，品牌只留爪印图标，搜索框允许收缩，不然会被挤出屏幕（页面看起来就坏了） */
-  body.search-undocked .t2-brand { font-size: 0; gap: 0; }
-  body.search-undocked .t2-search { min-width: 0; }
-  body.search-undocked .t2-top { gap: 8px; }
-
-  /* 归位钮：搜索框下方右侧，点了把搜索框收回顶栏 */
-  .t2-side-headrow { display: flex; justify-content: flex-end; padding: 2px 12px 0; }
-  .t2-p2-toggle {
-    display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  body.t2-searching .t2-p2-toggle {
+    display: grid; place-items: center; width: 40px; height: 40px; padding: 0;
     border: 1px solid var(--line-soft); border-radius: 999px; cursor: pointer;
     background: var(--card); color: var(--ink-2); box-shadow: var(--shadow);
   }
@@ -543,29 +529,13 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
   .t2-viewer-body .t2-pdf,
   .t2-viewer-body .t2-doc,
   .t2-viewer-body .t2-sheet { min-width: 0; max-width: 100%; box-sizing: border-box; }
-  .t2-viewer-body .t2-doc .docx-wrapper > section.docx { max-width: 100% !important; box-sizing: border-box; }
 
   /* PDF：整页铺满屏幕宽度 */
   .t2-viewer-body .t2-pdf { gap: 8px; width: 100%; }
   .t2-viewer-body .t2-pdf > p { padding: 8px 12px 0 !important; margin: 0 0 8px !important; font-size: 11.5px !important; }
   .t2-viewer-body .t2-pdfpage { width: 100% !important; border-radius: 0 !important; box-shadow: 0 2px 10px rgba(0, 0, 0, .35) !important; }
 
-  /* Word：整篇按屏幕宽度重排（覆盖 docx-preview 的固定 A4 宽；仍有溢出时 fitWidth 会兜底缩放）。
-     必须写 width:100%：.t2-doc 在预览区网格里是 shrink-to-fit 的居中项，只靠 max-width:100%
-     时里面的百分比宽度链（section 的 width:100%）会塌缩成内容宽，页面反而缩成一小条。 */
-  .t2-viewer-body .t2-doc { width: 100%; border-radius: 0; padding: 0; max-width: 100%; overflow-x: auto; }
-  .t2-viewer-body .t2-doc .docx-wrapper { padding: 0 !important; background: transparent !important; }
-  /* fitWidth() 会把整篇 zoom 到 0.3 倍（字小到看不清），手机上直接取消缩放，交给下一条规则重排 */
-  .t2-viewer-body .t2-doc .docx-wrapper { zoom: 1 !important; }
-  .t2-viewer-body .t2-doc .docx-wrapper > section.docx {
-    width: 100% !important; min-width: 0 !important;
-    padding: 16px 12px !important; margin: 0 0 8px !important;
-    box-shadow: none !important;
-  }
-  .t2-viewer-body .t2-doc img { max-width: 100% !important; height: auto !important; }
-  .t2-viewer-body .t2-doc table { max-width: 100% !important; }
-  /* Word 里的表格：能折行就折行，避免整篇横着拖 */
-  .t2-viewer-body .t2-doc table td, .t2-viewer-body .t2-doc table th { word-break: break-word; }
+  .t2-viewer-body .t2-doc .docx-wrapper > section.docx { box-shadow: none; }
 
   /* Excel / CSV：单元格允许折行，表格按屏幕宽度铺开（真的宽再横滑） */
   .t2-viewer-body .t2-sheet { width: 100%; border-radius: 0; }
@@ -577,17 +547,12 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 
   /* 图片 / 音频 / 文本 / 表格：边到边，去掉圆角白边 */
   .t2-viewer-body img.t2-img { max-width: 100%; border-radius: 0; }
-  .t2-viewer-body .t2-audio { width: 100%; border-radius: 0; padding: 18px 14px; }
-  .t2-viewer-body .t2-audio audio { width: 100%; }
   .t2-viewer-body pre.t2-text { width: 100%; border-radius: 0; font-size: 12px; }
   .t2-viewer-body canvas { max-width: 100%; height: auto; }
 
-  /* 播放器在手机上改成上下排：封面当横幅，控件在下 */
-  .t2-player { grid-template-columns: 1fr; gap: 12px; padding: 12px; border-radius: 0; width: 100%; border-left: 0; border-right: 0; }
-  .t2-pl-art { width: 100%; height: auto; aspect-ratio: 4 / 3; border-radius: 10px; }
-  .t2-pl-idle { object-fit: contain; }
-  .t2-pl-title { font-size: 14px; }
-  .t2-pl-play { width: 48px; height: 48px; }
+  .t2-top .t2-theme { grid-column: 3; grid-row: 1; width: 40px; height: 40px; margin-right: 0; }
+  .t2-mini-player { bottom: calc(82px + env(safe-area-inset-bottom)); }
+  body.t2-searching .t2-mini-player, body.t2-site-home .t2-mini-player { bottom: calc(14px + env(safe-area-inset-bottom)); }
 }
 
 @media (max-width: 560px) {
@@ -600,28 +565,22 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
   * { transition: none !important; scroll-behavior: auto !important; }
 }
 
-/* ---------------- 分享链接（/s/ 短链） ----------------
-   弹层是浅色卡片（盖在暗色抽屉/页面上都清楚），记录抽屉沿用 .t2-viewer 的暗色系 */
+/* ---------------- 分享链接 ---------------- */
 .t2-share-dlg {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483000;
-  display: none;
-  place-items: center;
-  background: rgba(10, 14, 20, .45);
-  padding: 16px;
-}
-.t2-share-dlg[data-on="true"] { display: grid; }
-.t2-share-card {
-  width: min(92vw, 460px);
+  width: min(calc(100% - 28px), 460px);
+  max-height: calc(100dvh - 28px);
+  color: var(--ink);
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 16px;
-  padding: 22px;
-  box-shadow: 0 18px 48px rgba(30, 58, 95, .28);
+  padding: 0;
+  box-shadow: var(--shadow);
 }
-.t2-share-title { font-weight: 700; color: var(--ink); margin: 0 0 6px; }
-.t2-share-name { color: var(--sub); font-size: 13px; margin: 0 0 14px; word-break: break-all; }
+.t2-share-dlg::backdrop { background: rgba(10, 14, 20, .55); }
+.t2-share-card { padding: clamp(12px, 4vw, 22px); }
+.t2-share-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.t2-share-title { font: 700 17px/1.3 var(--sans); margin: 0; }
+.t2-share-name { color: var(--ink-2); font-size: 13px; margin: 6px 0 14px; overflow-wrap: anywhere; }
 .t2-share-link { display: flex; gap: 8px; align-items: stretch; margin: 0 0 12px; }
 .t2-share-link a {
   flex: 1;
@@ -636,7 +595,8 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
   padding: 0 10px;
   color: var(--ink);
 }
-.t2-share-link .t2-btn { flex: none; }
+.t2-share-link .t2-btn { flex: none; gap: 6px; }
+.t2-share-link .t2-btn svg { width: 16px; height: 16px; flex: none; }
 .t2-share-note { color: var(--sub); font-size: 12.5px; margin: 0; }
 
 /* ---------------- 站点主页（届别选择，仿老 tree 的 index） ---------------- */
@@ -685,19 +645,6 @@ body.t2-site-home .t2-search-site-home { display: none; }
 .t2-fresh .t2-list { display: grid; gap: 0; }
 .t2-fresh .t2-file { border-bottom: 1px solid var(--line-soft); }
 
-/* ---------------- 播放器倍速按钮 ---------------- */
-.t2-pl-rate {
-  flex: none;
-  width: 56px;
-  height: 34px;
-  border-radius: 9px;
-  border: 1px solid rgba(255, 255, 255, .22);
-  background: rgba(255, 255, 255, .07);
-  color: #eee;
-  font: 600 12.5px/1 var(--sans);
-  cursor: pointer;
-}
-.t2-pl-rate:hover { background: rgba(255, 255, 255, .16); }
 
 /* MathType 公式渲染（wmf-view.js）：Symbol / MT Extra 必须随页面分发，
    考生电脑多半没装 MathType，浏览器里这两个字族只有我们带的份 */
@@ -724,7 +671,7 @@ html[data-theme="dark"] {
   --ink-2: #c6cbd4;
   --line: #3a3f47;
   --line-soft: #2e3239;
-  --sub: #9aa3ad;
+  --sub: var(--t2-muted);
   --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px -12px rgba(0, 0, 0, .6);
   --ink-contrast: #17191d;
 }
@@ -764,8 +711,6 @@ html[data-theme="dark"] #fav-entry:hover { background: #2e333b; }
 html[data-theme="dark"] .t2-node:hover { background: rgba(255, 255, 255, .06); }
 html[data-theme="dark"] .t2-btn.ghost:hover { background: rgba(255, 255, 255, .07); }
 html[data-theme="dark"] .t2-fatal-tip code { background: rgba(255, 255, 255, .08); }
-/* 文档内容的"纸"和字色不随主题变：txt/表格在两种模式下都是白纸黑字，
-   暗色适配只作用于抽屉的外观（顶栏/底色/按钮），不碰内容本身。 */
 html[data-theme="dark"] .t2-year-card { box-shadow: 0 4px 16px rgba(0, 0, 0, .3); }
 html[data-theme="dark"] .t2-year-card:hover { box-shadow: 0 10px 26px rgba(0, 0, 0, .45); }
 /* 文件行的选中/悬停阴影在暗底上本来就偏重，不用额外调；类型徽章（.t2-kind）是
@@ -793,6 +738,8 @@ html[data-theme="dark"] .t2-theme .ico-moon { opacity: 0; rotate: -100deg; }
 html.theme-anim, html.theme-anim body, html.theme-anim * , html.theme-anim *::before, html.theme-anim *::after {
   transition: background-color .32s ease, color .32s ease, border-color .32s ease, box-shadow .32s ease, fill .32s ease, stroke .32s ease, rotate .34s ease !important;
 }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 180ms; }
+::view-transition { pointer-events: none; }
 /* 上面那条 .t2-btn 的底色覆盖比 .primary 的特异性高，主按钮（下载）在这里单独找回反色 */
 html[data-theme="dark"] .t2-btn.primary { background: var(--ink); border-color: var(--ink); color: var(--ink-contrast); }
 

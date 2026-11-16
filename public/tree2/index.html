@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN" data-theme-animate>
 <head>
   <meta charset="utf-8">
   <!-- 有些内嵌浏览器只认 meta，不认响应头；HTML 被缓存就会出现"要刷新一次才是新界面" -->
@@ -14,14 +14,9 @@
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#1e3a5f">
   <link rel="apple-touch-icon" href="assets/facivon.svg">
-  <script>
-    // 防白闪：样式表生效前先把上次选的主题写到 <html data-theme>（与 app.js 共用 tree2.pref）
-    try {
-      if (JSON.parse(localStorage.getItem('tree2.pref') || '{}').theme === 'dark')
-        document.documentElement.dataset.theme = 'dark';
-    } catch (e) { /* 隐私模式 */ }
-  </script>
-  <link rel="stylesheet" href="css/tree2.css?v=20261116h">
+  <script src="js/theme.js?v=20261116-theme"></script>
+  <link rel="stylesheet" href="css/theme.css?v=20261116-theme">
+  <link rel="stylesheet" href="css/tree2.css?v=20261116-theme">
   <!-- 首屏用到的渲染库不预加载：pdf.js（1.5 MB）等点开文件时按需拉 -->
   <link rel="preconnect" href="/">
 </head>
@@ -43,7 +38,7 @@
       <kbd>/</kbd>
     </form>
     <!-- 亮/暗模式切换：贴最右上角的无框图标，两个图标叠着放，由 CSS 按主题淡入淡出 -->
-    <button class="t2-theme" id="theme-toggle" type="button" title="切换亮色/暗色模式" aria-label="切换亮色/暗色模式">
+    <button class="t2-theme" id="theme-toggle" type="button" data-theme-toggle title="切换亮色/暗色模式" aria-label="切换亮色/暗色模式">
       <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>
       </svg>
@@ -56,15 +51,12 @@
 
   <div class="t2-shell" id="shell">
     <aside class="t2-side" aria-label="目录">
-      <!-- 收起钮：搜索态时搜索框（动态插到本栏顶部）下方右侧，点了回到底部默认状态 -->
-      <div class="t2-side-headrow">
+      <div class="t2-filters">
+        <div class="t2-chips" id="kind-chips" aria-label="按类型筛选"></div>
         <button class="t2-p2-toggle" id="p2-toggle" type="button" title="收起，搜索框回到底部" aria-label="收起，搜索框回到底部">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
         </button>
-      </div>
-      <div class="t2-filters">
-        <div class="t2-chips" id="kind-chips" aria-label="按类型筛选"></div>
-        <button class="t2-btn" type="button" id="fav-entry" style="margin-top:10px;width:100%" title="收藏保存在本浏览器">★ 我的收藏</button>
+        <button class="t2-btn" type="button" id="fav-entry" title="收藏保存在本浏览器">★ 我的收藏</button>
       </div>
       <div class="t2-tree" id="tree" role="tree" aria-label="批次与目录"></div>
     </aside>
@@ -77,6 +69,10 @@
           <h1 class="t2-title">正在读取资料清单…</h1>
         </section>
       </div>
+      <footer class="t2-site-footer">
+        <span>© 2026 备考资料导航</span>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a>
+      </footer>
     </main>
     <!-- 左栏（目录栏）收起钮：参考 DevTools console 的抽屉，贴栏右下角，收起时滑到屏幕左下角 -->
     <button class="t2-tree-toggle" id="tree-toggle" type="button" title="收起/展开目录栏" aria-label="收起/展开目录栏">
@@ -102,16 +98,27 @@
       </button>
       <button class="t2-btn t2-ico-btn" type="button" id="v-close" title="关闭 (Esc)" aria-label="关闭预览">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 6l12 12"/><path d="M18 6L6 18"/>
+          <path class="t2-preview-close-icon" d="M6 6l12 12M18 6L6 18"/>
+          <path class="t2-preview-back-icon" d="M19 12H5m7 7-7-7 7-7"/>
         </svg>
       </button>
     </div>
     <div class="t2-viewer-body" id="v-body"></div>
   </section>
 
+  <div id="vinyl-host"></div>
+  <div class="t2-mini-player" id="mini-player" aria-label="音频悬浮播放器" hidden>
+    <button class="t2-mini-expand" id="mini-expand" type="button" aria-label="展开播放器">
+      <img src="assets/vinyl-cover.png" width="48" height="48" alt="">
+    </button>
+    <button class="t2-mini-close" id="mini-close" type="button" aria-label="关闭播放器">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
   <div class="t2-toast" id="t2-toast" role="status"></div>
 
-  <script type="module" src="js/app.js?v=20261115r"></script>
+  <script type="module" src="js/app.js?v=20261116-word-fit"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });

@@ -1,11 +1,18 @@
 /* tree2 × Navidrome 自定义外观 v5
    深蓝底 + 青蓝主色 + 大圆角，与 tree2 播放器同一套视觉 */
 
-/* 主题由 tree2 站内的亮/暗开关决定（music-custom.js 把它写到 <html data-theme>），
-   跟系统偏好无关。暗色就是 Navi 自己的暗色外观，不再额外叠底色；
-   亮色在下面整页刷成「白中带淡绿」。 */
 body {
   background: #f7fafc !important;
+}
+html[data-theme="light"] { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="dark"] body { background: #171b23 !important; }
+html[data-theme="dark"] .react-jinke-music-player-mobile.default-bg {
+  background: linear-gradient(180deg, #252b35 0%, #171b23 100%) !important;
+  color: #e8edf0;
+}
+html[data-theme="dark"] .react-jinke-music-player-mobile-progress :is(.current-time, .duration) {
+  color: #b7c1cb !important;
 }
 
 /* ---------------- 亮色：白中带淡绿 ---------------- */
@@ -189,6 +196,11 @@ html[data-theme="dark"] .t2-nd-vol-mute {
   align-items: center;
   gap: 8px;
 }
+/* 播放列表的双箭头占用同一位置，打开时把播放器自己的浮层让开。 */
+body:has(.audio-lists-panel.show) :is(.t2-nd-top, .t2-nd-pet, .t2-nd-pet-close) {
+  visibility: hidden;
+  pointer-events: none;
+}
 .t2-nd-back {
   display: inline-flex;
   align-items: center;
@@ -208,6 +220,14 @@ html[data-theme="dark"] .t2-nd-vol-mute {
   background: #fff;
   border-color: rgba(22, 50, 63, .22);
 }
+.t2-nd-top .t2-nd-collapse {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  cursor: pointer;
+  color: #128054 !important;
+}
+html[data-theme="dark"] .t2-nd-top .t2-nd-collapse { color: #71deac !important; }
 html[data-theme="dark"] .t2-nd-back {
   border-color: rgba(127, 214, 255, .28);
   background: rgba(32, 48, 58, .82);
@@ -218,6 +238,22 @@ html[data-theme="dark"] .t2-nd-back:hover {
   background: rgba(22, 32, 40, .92);
   border-color: rgba(127, 214, 255, .5);
 }
+html[data-theme="dark"] .audio-lists-panel {
+  background: #252b35;
+  color: #e8edf0;
+}
+
+.t2-nd-back.t2-nd-theme {
+  box-sizing: border-box;
+  width: 34px;
+  padding: 0;
+  cursor: pointer;
+}
+.t2-nd-theme svg { width: 17px; height: 17px; }
+.t2-nd-theme .t2-theme-sun,
+html[data-theme="dark"] .t2-nd-theme .t2-theme-moon { display: none; }
+html[data-theme="dark"] .t2-nd-theme .t2-theme-sun { display: block; }
+.t2-nd-theme:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 /* 底部两个图标往两边散开一点，别全挤在中间 */
 .react-jinke-music-player-mobile-operation .items {
@@ -251,7 +287,19 @@ html[data-theme="dark"] .t2-nd-back:hover {
    工具行和进度条（Navi 的 JSS 会用同优先级 margin:0 盖掉普通声明，
    必须带 !important 才压得住） */
 .react-jinke-music-player-mobile-cover {
+  width: min(300px, 72vw, 42dvh) !important;
+  height: auto !important;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 50%;
+  margin-inline: auto !important;
   margin-top: 0 !important;
+}
+.react-jinke-music-player-mobile-cover .cover {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
 }
 .react-jinke-music-player-mobile-singer {
   margin-top: 0 !important;
@@ -277,6 +325,36 @@ html[data-theme="dark"] .t2-nd-back:hover {
 .react-jinke-music-player-mobile-toggle {
   margin-top: 0;
 }
+.react-jinke-music-player-mobile-toggle.t2-nd-transport {
+  display: flex !important;
+  justify-content: center;
+  align-items: center;
+  gap: clamp(4px, 2.6vw, 16px);
+}
+.t2-nd-transport > .group {
+  flex: none;
+  display: grid;
+  place-items: center;
+  margin: 0 !important;
+  transform: none !important;
+}
+.t2-nd-transport > .t2-nd-skip {
+  width: 44px;
+  height: 44px;
+  align-self: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.t2-nd-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px 10px;
+  font-size: 11px;
+  color: inherit;
+}
+.t2-nd-footer a { color: inherit; text-underline-offset: 2px; }
 
 /* ---------------- 宠物 gif（可拖动） ---------------- */
 .t2-nd-pet {
@@ -421,15 +499,40 @@ html[data-theme="dark"] .t2-nd-back:hover {
   to { transform: rotate(360deg); }
 }
 
-@media (max-width: 640px) {
-  .t2-nd-vinyl { width: min(230px, 52vw); }
-  .t2-nd-pet { width: 72px; height: 72px; bottom: 88px; }
+@media (max-width: 640px), (max-height: 500px) {
+  .react-jinke-music-player-mobile {
+    box-sizing: border-box;
+    height: 100dvh !important;
+    padding-top: calc(56px + env(safe-area-inset-top));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    overflow: auto;
+    overscroll-behavior: contain;
+    justify-content: space-between !important;
+  }
+  .react-jinke-music-player-mobile-cover {
+    width: min(300px, 72vw, 36dvh) !important;
+    margin: 0 auto !important;
+  }
+  .react-jinke-music-player-mobile-operation,
+  .react-jinke-music-player-mobile-toggle { position: static !important; }
+  .t2-nd-top {
+    top: max(6px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+  }
+  .t2-nd-vinyl { width: min(230px, 52vw, 34dvh); }
+  .t2-nd-pet { width: 60px; height: 60px; }
   .t2-nd-skip { margin: 0 1px; padding: 0 3px; font-size: 11px; }
   .t2-nd-back { height: 32px; padding: 0 12px; font-size: 12px; }
+  .t2-nd-back.t2-nd-theme { width: 32px; }
   .t2-nd-vol-range { width: 84px; }
   /* 手机上工具行虽居中，音量右边余量不够，拉条改向左弹 */
   .t2-nd-vol-pop {
     left: auto;
     right: calc(100% + 8px);
   }
+}
+
+@media (max-height: 500px) {
+  .react-jinke-music-player-mobile-cover { width: min(170px, 52vw, 24dvh) !important; }
+  .react-jinke-music-player-mobile-toggle { height: auto !important; min-height: 44px; }
 }

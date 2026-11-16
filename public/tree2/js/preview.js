@@ -6,7 +6,7 @@
 //   * Word 用 docx-preview（纯浏览器渲染 OOXML，不需要服务端转 PDF，卷子里的公式/表格原件保留）；
 //   * 从文件内容里渲染出来的 HTML 一律过 sanitize()，再放进页面。
 
-const V = 'vendor';
+const V = new URL('../vendor', import.meta.url).href;
 const MAX = 80 * 1024 * 1024; // 在线预览上限，和参考项目一致
 
 const IMAGE = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon' };
@@ -114,8 +114,7 @@ export async function render(box, src, name, opts = {}) {
       if (kind === 'pdf') return await pdf(box, blob, note);
       return media(box, blob, IMAGE[ext] || 'image/*', (u) => `<img class="t2-img" src="${u}" alt="">`);
     }
-    if (kind === 'audio') return audioPlayer(box, typeof src === 'string' ? src : URL.createObjectURL(await toBlob(src)), name);
-    if (kind === 'docx') return await word(box, await toBlob(src), note);
+    if (kind === 'docx') return await word(box, await toBlob(src), note, isCurrent);
     if (kind === 'sheet') return await sheet(box, await toBlob(src), ext);
     if (kind === 'text') return await text(box, await toBlob(src), ext);
     if (kind === 'slides') return note('PPT 暂不支持在线渲染，请下载后用 PowerPoint / WPS 打开。');
@@ -129,8 +128,11 @@ export async function render(box, src, name, opts = {}) {
   }
 }
 
-function toBlob(src) {
-  return src instanceof Blob ? src : fetch(src).then((r) => r.blob());
+async function toBlob(src) {
+  if (src instanceof Blob) return src;
+  const response = await fetch(src);
+  if (!response.ok) throw new Error('文件读取失败（HTTP ' + response.status + '）');
+  return response.blob();
 }
 
 function escapeHtml(s) {
@@ -145,175 +147,6 @@ function media(box, blob, type, html) {
 // ---------------------------------------------------------------- 音频（Navidrome 风格播放器）
 
 /** 秒 → mm:ss / h:mm:ss */
-function clock(sec) {
-  if (!isFinite(sec) || sec < 0) return '--:--';
-  const s = Math.floor(sec % 60);
-  const m = Math.floor((sec / 60) % 60);
-  const h = Math.floor(sec / 3600);
-  const p = (n) => String(n).padStart(2, '0');
-  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
-}
-
-/**
- * 自绘播放器：封面 + 标题 + 进度（含缓冲）+ 播放键 + 音量。
- * 加载/缓冲时封面上盖一层转圈，避免"点了没反应"的错觉。
- * 封面是可选的：服务器 assets/pet.gif 存在就显示，不存在用 ♪ 占位。
- */
-function audioPlayer(box, url, name) {
-  box.innerHTML = `
-    <div class="t2-player" data-loading="true">
-      <div class="t2-pl-art">
-        <span class="t2-pl-note" aria-hidden="true">♪</span>
-        <img class="t2-pl-idle" alt="" hidden>
-        <div class="t2-pl-loading" aria-hidden="true">
-          <span class="t2-pl-spin"></span>
-          <span>缓冲中…</span>
-        </div>
-      </div>
-      <div class="t2-pl-panel">
-        <div class="t2-pl-title"></div>
-        <div class="t2-pl-sub"><span data-cur>00:00</span> / <span data-dur>--:--</span></div>
-        <button class="t2-pl-seek" type="button" aria-label="拖动或点击调整进度">
-          <span class="t2-pl-buf"></span><span class="t2-pl-fill"></span><span class="t2-pl-knob"></span>
-        </button>
-        <div class="t2-pl-ctl">
-          <button class="t2-pl-play" type="button" aria-label="播放">▶</button>
-          <span class="t2-pl-vol-ico" aria-hidden="true">🔊</span>
-          <input class="t2-pl-vol" type="range" min="0" max="1" step="0.01" value="0.9" aria-label="音量">
-          <button class="t2-pl-rate" type="button" aria-label="倍速">1x</button>
-        </div>
-      </div>
-    </div>
-    <audio class="t2-audio-el" preload="metadata"></audio>`;
-
-  // 可选封面：往服务器 assets/ 放一个 pet.gif 就会自动显示（没有就保持 ♪ 占位，
-  // 零流量——以前默认带的三个绝区零动图共 3.7 MB，已删）。
-  const idleImg = box.querySelector('.t2-pl-idle');
-  const petProbe = new Image();
-  petProbe.onload = () => { idleImg.src = petProbe.src; idleImg.hidden = false; };
-  petProbe.src = 'assets/pet.gif';
-
-  const root = box.querySelector('.t2-player');
-  const audio = box.querySelector('audio');
-  const el = {
-    play: box.querySelector('.t2-pl-play'),
-    cur: box.querySelector('[data-cur]'),
-    dur: box.querySelector('[data-dur]'),
-    fill: box.querySelector('.t2-pl-fill'),
-    buf: box.querySelector('.t2-pl-buf'),
-    knob: box.querySelector('.t2-pl-knob'),
-    seek: box.querySelector('.t2-pl-seek'),
-    vol: box.querySelector('.t2-pl-vol'),
-    rate: box.querySelector('.t2-pl-rate'),
-  };
-  box.querySelector('.t2-pl-title').textContent = name;
-
-  // 倍速循环（听力练习刚需）：0.75 → 1 → 1.25 → 1.5 → 2 → 0.75，按资料记忆
-  var RATES = [1, 1.25, 1.5, 2, 0.75];
-  var rateIdx = 1;
-  try {
-    var saved = parseFloat(localStorage.getItem('t2.plrate') || '1');
-    rateIdx = Math.max(0, RATES.indexOf(saved));
-    if (rateIdx < 0) rateIdx = 1;
-  } catch { rateIdx = 1; }
-  var applyRate = function () {
-    try { audio.playbackRate = RATES[rateIdx]; } catch { /* 部分内核不支持 */ }
-    el.rate.textContent = RATES[rateIdx] + 'x';
-    el.rate.title = '点按切换倍速';
-  };
-  applyRate();
-  el.rate.onclick = function () {
-    rateIdx = (rateIdx + 1) % RATES.length;
-    try { localStorage.setItem('t2.plrate', String(RATES[rateIdx])); } catch {}
-    applyRate();
-  };
-  audio.src = url;
-  audio.volume = Number(el.vol.value);
-
-  const loading = (on) => {
-    root.dataset.loading = String(Boolean(on));
-  };
-  const pct = (v) => (isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
-  const paintProgress = () => {
-    const d = audio.duration || 0;
-    const p = d ? audio.currentTime / d : 0;
-    el.fill.style.width = `${pct(p) * 100}%`;
-    el.knob.style.left = `${pct(p) * 100}%`;
-    el.cur.textContent = clock(audio.currentTime);
-    try {
-      if (audio.buffered.length) el.buf.style.width = `${pct(audio.buffered.end(audio.buffered.length - 1) / (d || 1)) * 100}%`;
-    } catch {
-      /* buffered 偶尔取不到 */
-    }
-  };
-
-  audio.addEventListener('loadstart', () => loading(true));
-  audio.addEventListener('waiting', () => loading(true));
-  audio.addEventListener('canplay', () => loading(false));
-  audio.addEventListener('playing', () => loading(false));
-  audio.addEventListener('loadedmetadata', () => {
-    el.dur.textContent = clock(audio.duration);
-    paintProgress();
-  });
-  audio.addEventListener('timeupdate', paintProgress);
-  audio.addEventListener('progress', paintProgress);
-  audio.addEventListener('play', () => {
-    el.play.textContent = '❚❚';
-    el.play.setAttribute('aria-label', '暂停');
-    root.classList.add('is-playing');
-  });
-  audio.addEventListener('pause', () => {
-    el.play.textContent = '▶';
-    el.play.setAttribute('aria-label', '播放');
-    root.classList.remove('is-playing');
-  });
-  audio.addEventListener('ended', () => {
-    el.play.textContent = '▶';
-    el.play.setAttribute('aria-label', '播放');
-    root.classList.remove('is-playing');
-    paintProgress();
-  });
-  audio.addEventListener('error', () => {
-    loading(false);
-    root.classList.add('is-error');
-    const sub = box.querySelector('.t2-pl-sub');
-    if (sub) sub.textContent = '音频加载失败，可以点右上角「下载」保存到本地听';
-  });
-
-  el.play.addEventListener('click', () => {
-    if (audio.paused) audio.play().catch(() => loading(false));
-    else audio.pause();
-  });
-
-  const seekTo = (clientX) => {
-    const r = el.seek.getBoundingClientRect();
-    if (!r.width || !isFinite(audio.duration)) return;
-    audio.currentTime = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * audio.duration;
-    paintProgress();
-  };
-  let dragging = false;
-  el.seek.addEventListener('pointerdown', (e) => {
-    dragging = true;
-    el.seek.setPointerCapture?.(e.pointerId);
-    seekTo(e.clientX);
-  });
-  el.seek.addEventListener('pointermove', (e) => {
-    if (dragging) seekTo(e.clientX);
-  });
-  el.seek.addEventListener('pointerup', () => {
-    dragging = false;
-  });
-  el.seek.addEventListener('pointercancel', () => {
-    dragging = false;
-  });
-
-  el.vol.addEventListener('input', () => {
-    audio.volume = Number(el.vol.value);
-  });
-
-  paintProgress();
-}
-
 // ---------------------------------------------------------------- PDF（pdf.js）
 
 /**
@@ -497,7 +330,13 @@ async function pdf(box, blob, note) {
 
 // ---------------------------------------------------------------- Word（docx-preview）
 
-async function word(box, blob, note) {
+let wordResizeObserver;
+export function disposeWord() {
+  wordResizeObserver?.disconnect();
+  wordResizeObserver = null;
+}
+
+async function word(box, blob, note, isCurrent) {
   // 服务端 LibreOffice 转 PDF 的路线已整体弃用，公式一律走下面 wmf-view 的浏览器端渲染。
   await script(`${V}/jszip-3.10.2/jszip.min.js`);
   await script(`${V}/docx-preview-0.4.1/docx-preview.min.js`);
@@ -511,6 +350,7 @@ async function word(box, blob, note) {
     const repacked = await repackDocxWithWmf(blob);
     if (repacked) blob = repacked;
   } catch { /* 重打包失败用原件渲染，正文照常 */ }
+  if (!isCurrent()) return;
   box.innerHTML = '<div class="t2-doc"></div>';
   const host = box.querySelector('.t2-doc');
   await d.renderAsync(blob, host, null, {
@@ -527,46 +367,44 @@ async function word(box, blob, note) {
     experimental: true,
     ignoreLastRenderedPageBreak: true,
   });
+  if (!isCurrent()) return;
   sanitize(host);
   fitWidth(host, host.querySelector('.docx-wrapper'));
   // 有些卷子正文是图片/文本框，docx-preview 渲染出来是空白页；给个提示比静默空白好
   const text = (host.textContent || '').trim();
   if (text.length < 20 && !host.querySelector('img')) {
     const p = document.createElement('p');
-    p.style.cssText = 'margin:10px;color:#8a7f6e;font-size:12px';
+    p.style.cssText = 'margin:10px;color:var(--t2-muted, #685b47);font-size:12px';
     p.textContent = '这份 Word 里几乎没有可渲染的文字（可能是扫描图或文本框排版），建议下载后查看。';
     host.appendChild(p);
   }
   if (!host.querySelector('.docx-wrapper')) note('这份 Word 没有解析出内容，建议下载后查看。');
 }
 
-/**
- * 页面宽度与容器不一致时整体缩放：太宽会横向溢出就缩小（手机上的 A4），
- * 太窄也放大铺满（有的文档页面尺寸设得小，docx-preview 照原样渲染就只有一小条）。
- * 上限 3 倍，避免极端小页被拉得过分；DOM 缩放是矢量的，放大不糊。
- */
 function fitWidth(host, inner) {
   if (!inner) return;
+  disposeWord();
+  // 按原始版心排版后再等比缩放，字距、换行和表格列宽保持一致。
+  let previousWidth = 0;
   const fit = () => {
-    inner.style.zoom = '';
-    // host 是预览区网格里 shrink-to-fit 的居中项，自己的宽度跟着内容走，
-    // 量不出"可用宽度"；得量父容器（.t2-viewer-body）去掉内边距后的宽。
-    let have = host.clientWidth;
-    if (host.parentElement) {
-      const ps = getComputedStyle(host.parentElement);
-      have = host.parentElement.clientWidth - parseFloat(ps.paddingLeft || '0') - parseFloat(ps.paddingRight || '0');
-    }
-    const need = inner.scrollWidth;
-    if (need > 0 && have > 0 && Math.abs(need - have) > 2) {
-      inner.style.zoom = String(Math.min(3, Math.max(0.3, have / need)));
-    }
+    const width = host.clientWidth;
+    if (!width || width === previousWidth) return;
+    previousWidth = width;
+    inner.style.zoom = '1';
+    inner.style.marginInline = '0';
+    const bounds = inner.getBoundingClientRect();
+    const contentRight = Array.from(inner.querySelectorAll('table, img, section.docx')).reduce(
+      (right, element) => Math.max(right, element.getBoundingClientRect().right), bounds.right);
+    const documentWidth = Math.ceil(Math.max(inner.scrollWidth, contentRight - bounds.left));
+    const available = Math.floor(host.getBoundingClientRect().right - bounds.left);
+    if (available > 1 && documentWidth > available) inner.style.zoom = String((available - 1) / documentWidth);
+    else inner.style.marginInline = '';
   };
   fit();
-  const ro = 'ResizeObserver' in window ? new ResizeObserver(fit) : null;
-  if (ro) {
-    // host 是收缩项，窗口变窄时它自己不一定会变；观察父容器（真正决定可用宽度的那个）。
-    ro.observe(host.parentElement || host);
-  } else window.addEventListener('resize', fit);
+  if ('ResizeObserver' in window) {
+    wordResizeObserver = new ResizeObserver(fit);
+    wordResizeObserver.observe(host);
+  }
 }
 
 // ---------------------------------------------------------------- Excel / CSV（SheetJS）

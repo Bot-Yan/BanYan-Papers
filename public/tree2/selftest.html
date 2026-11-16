@@ -5,31 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tree2 · 自检</title>
   <link rel="icon" href="assets/facivon.svg" type="image/svg+xml">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fffaf0">
+  <script src="js/theme.js?v=20261116-theme"></script>
+  <link rel="stylesheet" href="css/theme.css?v=20261116-theme">
   <style>
-    :root { --ink: #1e3a5f; --sub: #8a7f6e; --line: #e8dcc3; --ok: #22a06b; --bad: #e8503a; --paper: #fffaf0; }
-    body { margin: 0; font: 14px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--ink);
-      background: radial-gradient(1200px 420px at 50% -10%, #fff6e0, rgba(255,246,224,0) 70%), var(--paper); }
+    body { margin: 0; font: 14px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--t2-ink);
+      background: radial-gradient(1200px 420px at 50% -10%, var(--t2-glow), transparent 70%), var(--t2-paper); }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
     h1 { font-size: 26px; margin: 0 0 6px; }
-    .deck { color: var(--sub); margin: 0 0 18px; }
+    .deck { color: var(--t2-muted); margin: 0 0 18px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-    .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .card { background: var(--t2-card); border: 1px solid var(--t2-line); border-radius: 12px; padding: 14px; }
     .card h2 { font-size: 14px; margin: 0 0 8px; }
-    .card .state { font-size: 12px; color: var(--sub); min-height: 18px; }
-    .card .state.ok { color: var(--ok); }
-    .card .state.bad { color: var(--bad); }
-    .card .box { margin-top: 8px; background: #f7f4ee; border-radius: 8px; min-height: 80px; overflow: hidden; }
+    .card .state { font-size: 12px; color: var(--t2-muted); min-height: 18px; }
+    .card .state.ok { color: var(--t2-good); }
+    .card .state.bad { color: var(--t2-bad); }
+    .card .box { margin-top: 8px; background: var(--t2-field); border-radius: 8px; min-height: 80px; overflow: hidden; }
     .card img { max-width: 100%; display: block; border-radius: 6px; }
     .card .box iframe { width: 100%; height: 240px; border: 0; display: block; }
     .card .box audio { width: 100%; }
     .card .box pre { margin: 0; padding: 8px; font-size: 10px; max-height: 120px; overflow: hidden; }
-    .summary { margin-top: 20px; padding: 12px 14px; border-radius: 10px; background: #fff; border: 1px solid var(--line); font-weight: 700; }
-    ul.files { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; color: var(--sub); }
+    .summary { margin-top: 20px; padding: 12px 14px; border-radius: 10px; background: var(--t2-card); border: 1px solid var(--t2-line); font-weight: 700; }
+    ul.files { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; color: var(--t2-muted); }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>tree2 · 渲染自检</h1>
+    <header class="t2-theme-header">
+      <h1>tree2 · 渲染自检</h1>
+      <button class="t2-theme-switch" type="button" data-theme-toggle aria-label="切换至暗色"><svg class="t2-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg><svg class="t2-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+    </header>
     <p class="deck">用 <code>?year=2026&amp;api=…</code> 指定届别与文件服务；页面会把这一届「已入库」的文件按类型渲染一遍，并计时。</p>
     <div class="grid" id="grid"></div>
     <div class="summary" id="summary">等待文件服务…</div>
@@ -124,7 +130,7 @@
       const blob = await fetch(fileUrl(year, f)).then((r) => r.blob());
       const t0 = performance.now();
       const host = document.createElement('div');
-      host.style.cssText = 'background:#fff;transform-origin:0 0';
+      host.style.cssText = 'background:#fff;color:#222;color-scheme:light;transform-origin:0 0';
       await window.docx.renderAsync(blob, host, null, { inWrapper: true, ignoreWidth: true, ignoreHeight: true, breakPages: false });
       const ms = Math.round(performance.now() - t0);
       const filled = (host.querySelector('.docx-wrapper') ? host.querySelector('.docx-wrapper').textContent : host.textContent) || '';
@@ -192,7 +198,7 @@
           if (!RUNNERS[kind]) continue;
           for (const f of files.slice(0, each)) {
             all++;
-            const c = card(`${LABEL[kind]} <span style="font-weight:400;color:#8a7f6e;font-size:11px">${f.n.slice(0, 24)}</span>`);
+            const c = card(`${LABEL[kind]} <span style="font-weight:400;color:var(--t2-muted);font-size:11px">${f.n.slice(0, 24)}</span>`);
             c.state.textContent = '渲染中…';
             try {
               const r = await withTimeout(RUNNERS[kind](f, c), 60000);
