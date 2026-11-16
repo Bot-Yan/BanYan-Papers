@@ -384,26 +384,35 @@ async function word(box, blob, note, isCurrent) {
 function fitWidth(host, inner) {
   if (!inner) return;
   disposeWord();
-  // 按原始版心排版后再等比缩放，字距、换行和表格列宽保持一致。
-  let previousWidth = 0;
+  // 先按 Word 原始页宽排版，再缩放画面；外层按缩放后的尺寸占位。
+  const stage = document.createElement('div');
+  stage.style.cssText = 'position:relative;margin-inline:auto;overflow:hidden';
+  inner.before(stage);
+  stage.append(inner);
+  Object.assign(inner.style, {
+    position: 'absolute', top: '0', left: '0', width: 'max-content', margin: '0',
+    transformOrigin: 'top left', webkitTextSizeAdjust: '100%', textSizeAdjust: '100%',
+  });
+  let previousWidth, previousHeight, previousScale;
   const fit = () => {
-    const width = host.clientWidth;
-    if (!width || width === previousWidth) return;
+    const available = host.clientWidth;
+    const width = Math.max(inner.offsetWidth, inner.scrollWidth);
+    const height = Math.max(inner.offsetHeight, inner.scrollHeight);
+    if (!available || !width || !height) return;
+    const scale = Math.min(1, available / width);
+    if (width === previousWidth && height === previousHeight && scale === previousScale) return;
     previousWidth = width;
-    inner.style.zoom = '1';
-    inner.style.marginInline = '0';
-    const bounds = inner.getBoundingClientRect();
-    const contentRight = Array.from(inner.querySelectorAll('table, img, section.docx')).reduce(
-      (right, element) => Math.max(right, element.getBoundingClientRect().right), bounds.right);
-    const documentWidth = Math.ceil(Math.max(inner.scrollWidth, contentRight - bounds.left));
-    const available = Math.floor(host.getBoundingClientRect().right - bounds.left);
-    if (available > 1 && documentWidth > available) inner.style.zoom = String((available - 1) / documentWidth);
-    else inner.style.marginInline = '';
+    previousHeight = height;
+    previousScale = scale;
+    stage.style.width = `${Math.min(width, available)}px`;
+    stage.style.height = `${Math.ceil(height * scale)}px`;
+    inner.style.transform = scale < 1 ? `scale(${scale})` : '';
   };
   fit();
   if ('ResizeObserver' in window) {
     wordResizeObserver = new ResizeObserver(fit);
     wordResizeObserver.observe(host);
+    wordResizeObserver.observe(inner);
   }
 }
 

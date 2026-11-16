@@ -603,6 +603,7 @@ const themeToggle = `<button class="t2-theme-switch" type="button" data-theme-to
 
 const SHARE_ICONS = {
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM9 21v-7h6v7"/>',
+  back: '<path d="M19 12H5m7 7-7-7 7-7"/>',
   file: '<path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h6"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
   open: '<path d="M3 19V6a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v3M3 19h16a1 1 0 0 0 1-.7l2-6a1 1 0 0 0-1-1.3H7a1 1 0 0 0-1 .7z"/>',
@@ -648,13 +649,16 @@ const SHARE_PAGE_CSS = `
  .brand{display:flex;align-items:center;gap:8px;font-weight:700;text-decoration:none;color:var(--t2-ink);margin:0;font-size:15px}
  .t2-theme-header{margin:0 0 18px}
  .share-icon{display:block;flex:none}
+ .share-back{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;margin:0 0 14px;
+     border:1px solid var(--t2-line);border-radius:8px;color:var(--t2-ink);text-decoration:none;font-size:13px}
+ .share-back:hover{background:var(--t2-soft)}
  .kind,.f-act a,.down{display:flex;align-items:center;gap:6px}
  .kind .share-icon,.f-act .share-icon,.crumb .share-icon{width:15px;height:15px}
  .crumb .share-icon{display:inline-block;vertical-align:middle;color:var(--t2-muted)}
  .empty-share{color:var(--t2-muted)}
  .empty-share .share-icon{margin-bottom:8px}
  .kind{font-size:12px;color:var(--t2-accent);letter-spacing:.12em;margin:0 0 6px}
- h1{font-size:20px;line-height:1.45;margin:0 0 10px;word-break:break-all}
+ main > .card > h1{font-size:20px;line-height:1.45;margin:0 0 10px;word-break:break-all}
  .meta{color:var(--t2-muted);font-size:13px;margin:0 0 20px}
  .down{justify-content:center;text-align:center;padding:12px 20px;background:var(--t2-action);color:var(--t2-action-ink);border-radius:10px;
        text-decoration:none;font-weight:700;font-size:15px;margin:0 0 6px}
@@ -724,9 +728,19 @@ async function keyMetaMap() {
   return map;
 }
 
+function shareSourceFolder(req) {
+  const base = 'http://tree2.local';
+  const from = new URL(req.url, base).searchParams.get('from');
+  if (!from?.startsWith('/d/')) return '';
+  const folder = new URL(from, base);
+  return folder.origin === base && /^\/d\/(?:id\/)?\d{4}\/.+/.test(folder.pathname) ? folder.pathname : '';
+}
+
 /** 文件分享页：按类型加载站内预览，并提供单独的下载入口。 */
 function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, visitsLabel = '', audioPending = false }) {
   const filesUrl = `/api/tree2/files/${encodeURIComponent(season)}?k=${encodeURIComponent(key)}&n=${encodeURIComponent(name)}`;
+  const sourceFolder = shareSourceFolder(req);
+  const backUrl = sourceFolder || `/?s=${encodeURIComponent(season)}`;
   // 客户端渲染类预览共用的净化器 + 容器
   const T2_CLEAN = '<script>function t2Clean(root){root.querySelectorAll(\'script,iframe,object,embed,link,meta\').forEach(function(e){e.remove()});[].forEach.call(root.querySelectorAll(\'*\'),function(e){[].slice.call(e.attributes).forEach(function(a){if(/^on/i.test(a.name))e.removeAttribute(a.name)})})}</script>';
   let preview = '';
@@ -791,7 +805,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
     preview = `<div id="t2-preview" class="preview t2-landing-doc t2-landing-word">正在渲染 Word 预览…</div>
 <script type="module">
   const host = document.getElementById('t2-preview');
-  import('/js/preview.js?v=20261116-word-fit')
+  import('/js/preview.js?v=20261116-word-layout')
     .then(({ render }) => render(host, ${JSON.stringify(filesUrl)}, ${JSON.stringify('preview' + ext)}))
     .catch(() => { host.textContent = 'Word 预览组件加载失败，请用「下载文件」查看。'; });
 </script>`;
@@ -848,6 +862,7 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
  ${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main${SHARE_WORD.has(ext) ? ' class="word-share"' : ''}>
 <div class="card">
 ${shareBrand}
+<a class="share-back" href="${escHtml(backUrl)}">${shareIcon('back')}${sourceFolder ? '返回文件夹' : '返回资料库'}</a>
 <p class="kind">${shareIcon(shareFileIcon(ext))}${escHtml(kindLabelOf(ext))} · 文件分享</p>
 <h1>${escHtml(name)}</h1>
 <p class="meta">${fmtBytes(size)} · ${escHtml(dateLabel)}${visitsLabel}</p>
@@ -1019,6 +1034,7 @@ const folderLink = (year, node, segs) => isFolderId(node?.folderId)
 
 function sendFolderLanding(req, res, { year, segs, node, batch, ancestors = [] }) {
   const zipUrl = `/api/tree2/zip/${year}/${encodedFolderPath(segs)}`;
+  const previewFrom = encodeURIComponent(folderLink(year, node, segs));
   const dirs = (node.c || []).filter((c) => c.t === 'd');
   const files = (node.c || []).filter((c) => c.t === 'f');
 
@@ -1038,7 +1054,7 @@ function sendFolderLanding(req, res, { year, segs, node, batch, ancestors = [] }
       const key = typeof f.k === 'string' ? f.k : '';
       const filesUrl = `/api/tree2/files/${encodeURIComponent(year)}?k=${encodeURIComponent(key)}&n=${encodeURIComponent(f.n)}`;
       const ext = path.extname(key || f.n).toLowerCase();
-      const previewUrl = `/s/${key.split('/').map(encodeURIComponent).join('/')}`;
+      const previewUrl = `/s/${key.split('/').map(encodeURIComponent).join('/')}?from=${previewFrom}`;
       const safeName = escHtml(f.n);
       const preview = key && canSharePreview(ext);
       const label = preview ? `<a href="${previewUrl}">${safeName}</a>` : safeName;

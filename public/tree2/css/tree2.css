@@ -325,8 +325,8 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
 .t2-ico-btn { width: 36px; height: 36px; padding: 0; justify-content: center; flex: none; }
 .t2-ico-btn svg { width: 18px; height: 18px; display: block; }
 .t2-preview-back-icon,
-.t2-viewer[data-audio="true"] .t2-preview-close-icon { display: none; }
-.t2-viewer[data-audio="true"] .t2-preview-back-icon { display: inline; }
+.t2-viewer[data-back="true"] .t2-preview-close-icon { display: none; }
+.t2-viewer[data-back="true"] .t2-preview-back-icon { display: inline; }
 .t2-viewer-body { overflow: auto; padding: 18px; display: grid; place-items: start center; }
 .t2-viewer-body .pad { padding: 40px; text-align: center; color: var(--v-sub); }
 .t2-viewer-body img.t2-img { max-width: min(100%, 1100px); height: auto; background: #fff; border-radius: 6px; }

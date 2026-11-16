@@ -7,7 +7,7 @@
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
 import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115b';
-import { kindOf, canRender, extOf, render, disposePdf, disposeWord } from './preview.js?v=20261116-word-fit';
+import { kindOf, canRender, extOf, render, disposePdf, disposeWord } from './preview.js?v=20261116-word-layout';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -1195,9 +1195,11 @@ async function openViewer(file, parent, restore = false, season = state.query.s)
 
   box.dataset.open = 'true';
   box.dataset.audio = String(hasAudio);
+  const hasBack = hasAudio || k === 'docx';
+  box.dataset.back = String(hasBack);
   const back = $('#v-close');
-  back.setAttribute('aria-label', hasAudio ? '返回目录' : '关闭预览');
-  back.title = hasAudio ? '收起为悬浮播放器 (Esc)' : '关闭 (Esc)';
+  back.setAttribute('aria-label', hasBack ? '返回目录' : '关闭预览');
+  back.title = hasAudio ? '收起为悬浮播放器 (Esc)' : hasBack ? '返回目录 (Esc)' : '关闭 (Esc)';
   document.body.style.overflow = 'hidden';
   if (!restore) {
     writeUrl(false);

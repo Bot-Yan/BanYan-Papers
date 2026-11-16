@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="assets/facivon.svg">
   <script src="js/theme.js?v=20261116-theme"></script>
   <link rel="stylesheet" href="css/theme.css?v=20261116-theme">
-  <link rel="stylesheet" href="css/tree2.css?v=20261116-theme">
+  <link rel="stylesheet" href="css/tree2.css?v=20261116-word-layout">
   <!-- 首屏用到的渲染库不预加载：pdf.js（1.5 MB）等点开文件时按需拉 -->
   <link rel="preconnect" href="/">
 </head>
@@ -118,7 +118,7 @@
 
   <div class="t2-toast" id="t2-toast" role="status"></div>
 
-  <script type="module" src="js/app.js?v=20261116-word-fit"></script>
+  <script type="module" src="js/app.js?v=20261116-word-layout"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
