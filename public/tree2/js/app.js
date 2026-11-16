@@ -1148,6 +1148,9 @@ function stopAudio() {
 
 function showVinylFrame(session, expanded) {
   const show = expanded && session.ready;
+  if (show && session.frame.dataset.expanded !== 'true') {
+    session.frame.contentWindow.postMessage({ tree2Player: 'opened' }, session.origin);
+  }
   session.frame.dataset.expanded = String(show);
   session.frame.inert = !show;
 }
@@ -1161,7 +1164,7 @@ function mountVinylPlayer(file, parent, season) {
   frame.allow = 'autoplay';
   frame.referrerPolicy = 'origin';
   frame.src = `${standalone.href}?t2embed=1`;
-  const session = { frame, file, parent, season, origin: standalone.origin, ready: false, playing: false };
+  const session = { frame, file, parent, season, activeKey: file.k, origin: standalone.origin, ready: false, playing: false };
   session.startup = setTimeout(() => {
     if (audioSession !== session || session.ready) return;
     const loading = $('#v-body [data-vinyl-loading]');
@@ -1172,7 +1175,7 @@ function mountVinylPlayer(file, parent, season) {
   $('#vinyl-host').append(frame);
 }
 
-async function openViewer(file, parent, restore = false, season = state.query.s) {
+async function openViewer(file, parent, restore = false, season = state.query.s, resumeAudio = false) {
   disposePdf(); // 上一个预览若是 PDF，先把它的内存/监听器释放掉
   disposeWord();
   const box = $('#viewer');
@@ -1183,7 +1186,7 @@ async function openViewer(file, parent, restore = false, season = state.query.s)
   const titleEl = $('#v-title');
   if (titleEl) titleEl.textContent = file.n;
   const k = kindOf(file.n);
-  const sameAudio = audioSession?.season === season && audioSession.file.k === file.k;
+  const sameAudio = audioSession && (resumeAudio || audioSession.activeKey === file.k);
   const online = sameAudio || isOnline(file);
   const hasAudio = online && k === 'audio';
   const url = fileUrl(season, file);
@@ -1215,13 +1218,13 @@ async function openViewer(file, parent, restore = false, season = state.query.s)
   }
 
   if (hasAudio) {
-    $('#mini-expand').title = file.n;
     body.innerHTML = '<div class="pad" role="status" data-vinyl-loading>正在打开黑胶播放器…</div>';
     if (sameAudio) {
-      Object.assign(audioSession, { file, parent });
+      Object.assign(audioSession, { file, parent, season });
     } else {
       stopAudio();
       mountVinylPlayer(file, parent, season);
+      $('#mini-expand').title = file.n;
     }
     showVinylFrame(audioSession, true);
     syncMiniPlayer();
@@ -1503,7 +1506,7 @@ function wire() {
   bind('#mini-expand', () => {
     if (!audioSession) return;
     const { file, parent, season } = audioSession;
-    openViewer(file, parent, false, season);
+    openViewer(file, parent, false, season, true);
   });
   bind('#mini-close', stopAudio);
   window.addEventListener('message', (e) => {
@@ -1514,12 +1517,16 @@ function wire() {
       session.ready = true;
       clearTimeout(session.startup);
       session.playing = e.data.playing === true;
+      if (e.data.key === null || /^[0-9a-f]{2}\/[0-9a-f]{64}\.(?:mp3|wav|m4a|ogg|flac|aac)$/.test(e.data.key)) {
+        session.activeKey = e.data.key;
+        $('#mini-expand').title = typeof e.data.title === 'string' ? e.data.title : session.file.n;
+      }
       const viewer = $('#viewer');
       showVinylFrame(session, viewer.dataset.open === 'true' && viewer.dataset.audio === 'true');
       syncMiniPlayer();
     }
     if (type === 'minimize' && session.frame.dataset.expanded === 'true') closeViewerBack();
-    if (type === 'favorite' && e.data.key === session.file.k) {
+    if (type === 'favorite' && e.data.key && e.data.key === session.activeKey) {
       if (e.data.on === true) favSet.add(e.data.key);
       else favSet.delete(e.data.key);
       renderMain();

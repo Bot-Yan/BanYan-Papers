@@ -125,13 +125,19 @@
   var pet = null;
   var petClose = null;
   var reportedPlaying;
+  var reportedTrack;
 
   function paint() {
     var on = isPlaying();
-    if (parentOrigin && on !== reportedPlaying && document.querySelector('.react-jinke-music-player-mobile')) {
+    var track = window.tree2VinylPlaylist?.current();
+    var key = track ? track.id.slice(0, 2) + '/' + track.id : window.tree2VinylPlaylist ? null : favKeyFromLocation();
+    if (parentOrigin && (on !== reportedPlaying || key !== reportedTrack) && document.querySelector('.react-jinke-music-player-mobile')) {
       reportedPlaying = on;
-      sendPlayerMessage('state', { playing: on });
+      reportedTrack = key;
+      sendPlayerMessage('state', { playing: on, key: key, title: track?.title });
     }
+    var favorite = document.querySelector('.t2-nd-fav');
+    if (favorite && favorite.dataset.k !== (key || '')) updateFavorite(favorite, key);
     setPet(on ? 'play' : 'idle');
     var discs = document.querySelectorAll('.t2-nd-disc');
     for (var i = 0; i < discs.length; i++) discs[i].classList.toggle('is-playing', on);
@@ -237,31 +243,38 @@
   }
 
   /** 收藏：五角星（跟资料库里的 ★/☆ 同款语义），实心=已收藏；共用同一个 localStorage */
+  function updateFavorite(button, key) {
+    var on = Boolean(key && favHas(key));
+    button.dataset.k = key || '';
+    button.disabled = !key;
+    button.title = on ? '已收藏，点按取消' : '收藏到本浏览器';
+    button.setAttribute('aria-pressed', String(on));
+    var path = button.querySelector('.t2-nd-fav-path');
+    var fill = on ? '#e8a838' : 'none';
+    if (path.getAttribute('fill') !== fill) path.setAttribute('fill', fill);
+  }
+
   function makeFavSpan() {
     var k = favKeyFromLocation();
     if (!k) return null;
     var s = document.createElement('button');
     s.type = 'button';
     s.className = 'group t2-nd-ctrl t2-nd-fav';
-    s.dataset.k = k;
     s.setAttribute('aria-label', '收藏');
-    var paint = function (on) {
-      s.title = on ? '已收藏，点按取消' : '收藏到本浏览器';
-      s.setAttribute('aria-pressed', String(on));
-      s.querySelector('.t2-nd-fav-path').setAttribute('fill', on ? '#e8a838' : 'none');
-    };
     s.innerHTML =
       '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
       '<path class="t2-nd-fav-path" ' +
       'd="M12 2.8l2.8 5.6 6.2.9-4.5 4.4 1.1 6.2L12 17l-5.6 2.9 1.1-6.2-4.5-4.4 6.2-.9z" ' +
       'stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>' +
       '</svg>';
-    paint(favHas(k));
+    updateFavorite(s, k);
     s.addEventListener('click', function (e) {
       e.stopPropagation();
-      var on = favToggle(s.dataset.k);
-      paint(on);
-      sendPlayerMessage('favorite', { key: s.dataset.k, on: on });
+      var key = s.dataset.k;
+      if (!key) return;
+      var on = favToggle(key);
+      updateFavorite(s, key);
+      sendPlayerMessage('favorite', { key: key, on: on });
     });
     return s;
   }
@@ -563,7 +576,7 @@
 
   /* ---------------- 返回资料库 ---------------- */
 
-  // 右上角统一放倍速和返回，避免一个在左上、一个在左下的割裂感
+  // 返回和收起按钮位于右上角。
   function topBar() {
     var bar = document.querySelector('.t2-nd-top');
     if (!bar) {
@@ -783,7 +796,7 @@
     button.setAttribute('data-theme-toggle', '');
     button.setAttribute('aria-label', '切换至暗色');
     button.innerHTML = '<svg class="t2-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg><svg class="t2-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>';
-    topBar().appendChild(button);
+    document.body.appendChild(button);
     if (window.tree2Theme) window.tree2Theme.refresh();
   }
 

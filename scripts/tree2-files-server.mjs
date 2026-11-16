@@ -903,6 +903,9 @@ const vinylTrack = '([0-9a-f]{64}\\.(?:mp3|wav|m4a|ogg|flac|aac))';
 const vinylKey = track => `${track.slice(0, 2)}/${track}`;
 const scriptJson = value => JSON.stringify(JSON.stringify(value)).replaceAll('<', '\\u003c');
 
+route('GET', /^\/api\/tree2\/vinyl\/playlist\.js$/, (req, res) =>
+  serveStatic(req, res, '/tree2/music-playlist.js'));
+
 route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req, res, [, year, track]) => {
   requireRead(req);
   const key = vinylKey(track);
@@ -931,8 +934,9 @@ route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req
 ${SHARE_PAGE_THEME}
 <script>window.process={env:{}};window.__APP_CONFIG__=${scriptJson(config)};window.__SHARE_INFO__=${scriptJson(info)};</script>
 <link rel="stylesheet" href="${VINYL_ASSETS}/index-uCXnEN-G.css">
-<link rel="stylesheet" href="/music-custom.css?v=20261116-hide-empty-artist">
-<script defer src="/music-custom.js?v=20261116-theme"></script>
+<link rel="stylesheet" href="/music-custom.css?v=20261116-playlist">
+<script src="/api/tree2/vinyl/playlist.js?v=1"></script>
+<script defer src="/music-custom.js?v=20261116-playlist"></script>
 <script type="module" src="${VINYL_ASSETS}/index-7wbOXZOY.js"></script>
 </head><body><div id="root"></div></body></html>`;
   res.writeHead(200, {
