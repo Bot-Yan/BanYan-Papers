@@ -916,8 +916,8 @@ route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req
 ${SHARE_PAGE_THEME}
 <script>window.process={env:{}};window.__APP_CONFIG__=${scriptJson(config)};window.__SHARE_INFO__=${scriptJson(info)};</script>
 <link rel="stylesheet" href="${VINYL_ASSETS}/index-uCXnEN-G.css">
-<link rel="stylesheet" href="/tree2/music-custom.css?v=20261116-theme">
-<script defer src="/tree2/music-custom.js?v=20261116-theme"></script>
+<link rel="stylesheet" href="/music-custom.css?v=20261116-theme">
+<script defer src="/music-custom.js?v=20261116-theme"></script>
 <script type="module" src="${VINYL_ASSETS}/index-7wbOXZOY.js"></script>
 </head><body><div id="root"></div></body></html>`;
   res.writeHead(200, {
