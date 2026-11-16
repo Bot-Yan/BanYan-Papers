@@ -22,7 +22,8 @@ const fixture = input => {
 };
 
 test('closing a pending PDF preview destroys its document and suppresses stale errors', async () => {
-  const source = await readFile(new URL('../public/tree2/js/preview.js', import.meta.url), 'utf8');
+  const previewUrl = new URL('../public/tree2/js/preview.js', import.meta.url);
+  const source = await readFile(previewUrl, 'utf8');
   const { promise: firstPage, reject: failPage } = Promise.withResolvers();
   const { promise: pageRequested, resolve: requestPage } = Promise.withResolvers();
   let destroyed = 0;
@@ -45,7 +46,10 @@ test('closing a pending PDF preview destroys its document and suppresses stale e
       addEventListener() { assert.fail('Stale PDF registered a window listener'); },
     },
   });
-  const { render, disposePdf } = new Script(source.replace(/^export /gm, '') + '\n;({ render, disposePdf });').runInContext(context);
+  const scriptSource = source
+    .replace(/^export /gm, '')
+    .replaceAll('import.meta.url', JSON.stringify(previewUrl.href));
+  const { render, disposePdf } = new Script(scriptSource + '\n;({ render, disposePdf });').runInContext(context);
   let current = true;
   const preview = render(box, new Blob(['fixture']), 'first.pdf', { isCurrent: () => current });
   await pageRequested;
