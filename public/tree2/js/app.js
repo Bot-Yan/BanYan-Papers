@@ -959,11 +959,10 @@ function renderHome(main) {
   const title = state.manifest.title || `${year} 届`;
   const byStage = {};
   for (const b of state.manifest.batches) byStage[b.stage] = (byStage[b.stage] || 0) + 1;
-  // 最近 7 天新增（跨批次收集，最新在前）
-  const fresh = [];
-  const walkFresh = (n, p2) => { for (const c of n.c || []) { if (c.t === 'd') walkFresh(c, p2 + '/' + c.n); else if (isNewFile(c)) fresh.push({ file: c, path: p2 + '/' + c.n }); } };
-  for (const b of state.manifest.batches) walkFresh(b.tree, b.name);
-  fresh.sort((a, b) => String(b.file.w || '').localeCompare(String(a.file.w || '')));
+  const freshLimit = 12;
+  const fresh = flatten(rootOf(), '')
+    .filter(({ file }) => isNewFile(file))
+    .sort((a, b) => Date.parse(b.file.w) - Date.parse(a.file.w));
   main.innerHTML = `
     <section class="t2-hero">
       <div class="t2-kicker">资料库 · ${esc(title)}</div>
@@ -983,10 +982,10 @@ function renderHome(main) {
           : ''
       }
     </section>
-    <section class="t2-fresh">
-      <h3 style="font-family:var(--serif);margin:0 0 10px">最近 7 天新增 <span style="color:var(--sub);font-size:13px;font-family:var(--sans)">${fresh.length} 份</span></h3>
-      <ul class="t2-list" id="fresh-list" style="margin:0"></ul>
-      <p class="t2-deck" style="margin:8px clamp(14px, 3vw, 36px) 0;font-size:12.5px">点文件名直接预览；新的听力会同步出现在音乐库里。</p>
+    <section class="t2-fresh" aria-labelledby="fresh-heading">
+      <h3 id="fresh-heading">最近 7 天新增 <span>${fresh.length} 份</span></h3>
+      <ul class="t2-list" id="fresh-list">${fresh.length ? '' : '<li class="t2-empty">最近 7 天没有新增资料。</li>'}</ul>
+      ${fresh.length > freshLimit ? `<button class="t2-btn t2-fresh-more" type="button" aria-controls="fresh-list">查看全部 ${fresh.length} 份</button>` : ''}
     </section>
     <section class="t2-start">
       <h3 style="font-family:var(--serif);margin:0 0 10px">怎么找</h3>
@@ -1010,9 +1009,19 @@ function renderHome(main) {
           : `<p style="margin-top:22px;font-size:13px;color:var(--sub)">当前届没有配置文件存储，预览按钮会提示"未入库"。配置方法见 <code>docs/tree2.md</code>。</p>`
       }
     </section>`;
-  // 最近新增列表行（fileRow 复用，点文件名可预览）
   const freshUl = main.querySelector('#fresh-list');
-  if (freshUl) fresh.slice(0, 6).forEach((h) => freshUl.appendChild(fileRow(h.file, h.path, false, state.query.s)));
+  const appendFresh = items => {
+    const rows = document.createDocumentFragment();
+    for (const { file, path } of items) rows.appendChild(fileRow(file, path));
+    freshUl.appendChild(rows);
+  };
+  appendFresh(fresh.slice(0, freshLimit));
+  const more = main.querySelector('.t2-fresh-more');
+  if (more) more.onclick = () => {
+    appendFresh(fresh.slice(freshLimit));
+    freshUl.children[freshLimit].querySelector('[data-a="fav"]').focus();
+    more.remove();
+  };
   main.querySelectorAll('[data-stage]').forEach((el) =>
     el.addEventListener('click', () => go({ p: stagePath(el.dataset.stage) })),
   );

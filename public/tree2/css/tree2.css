@@ -435,6 +435,7 @@ html[data-theme="dark"] .t2-shell.tree-collapsed .t2-tree-toggle { border-color:
   body.t2-searching .t2-main { padding-bottom: 0; }
   /* 搜索时收起统计和"怎么找/按阶段"，只留 标题 + 简介，搜索框顶到简介下面 */
   body.t2-searching .t2-stats,
+  body.t2-searching .t2-fresh,
   body.t2-searching .t2-start { display: none; }
   .t2-menu { display: none !important; }
   .t2-tree-toggle { display: none !important; } /* 窄屏没有左栏，用 p2 自己的收起钮 */
@@ -655,8 +656,31 @@ body.t2-site-home .t2-search-site-home { display: none; }
 .t2-tag.new { background: #e7f6ec; color: #2f9e63; border: 1px solid #bfe3cd; }
 #fav-entry { background: var(--paper-2); }
 #fav-entry:hover { background: #f3e7c8; }
-.t2-fresh .t2-list { display: grid; gap: 0; }
-.t2-fresh .t2-file { border-bottom: 1px solid var(--line-soft); }
+.t2-fresh { margin-block-start: 20px; }
+.t2-fresh h3 { font-family: var(--serif); margin: 0 0 6px; }
+.t2-fresh h3 span { margin-inline-start: 4px; color: var(--sub); font: 500 13px var(--sans); }
+.t2-fresh .t2-list { margin: 0; padding: 0; }
+.t2-fresh .t2-list > .t2-file {
+  grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; margin: 0; padding: 6px 2px;
+  border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; background: transparent; box-shadow: none;
+}
+.t2-fresh .t2-list > .t2-file:hover { background: var(--paper-2); }
+.t2-fresh .t2-file-ico { width: 26px; height: 26px; }
+.t2-fresh .t2-file-sub { flex-wrap: nowrap; gap: 0 6px; }
+.t2-fresh .t2-file-sub > :not(.t2-file-path) { flex: none; }
+.t2-fresh .t2-file-path { flex: 0 1 auto; min-width: 0; order: 1; }
+.t2-fresh .t2-tag.ok, .t2-fresh .t2-tag.new { display: none; }
+.t2-fresh .t2-file-act { flex-direction: row; gap: 4px; }
+.t2-fresh .t2-file-act .t2-btn { height: 28px; padding: 0 8px; }
+.t2-fresh-more { margin-top: 10px; }
+@media (max-width: 480px) {
+  .t2-fresh .t2-list > .t2-file { row-gap: 2px; }
+  .t2-fresh .t2-file-ico { grid-row: span 2; }
+  .t2-fresh .t2-file-info { display: contents; }
+  .t2-fresh .t2-file-heading { grid-column: 2 / -1; min-width: 0; }
+  .t2-fresh .t2-file-sub { grid-column: 2; min-width: 0; overflow: hidden; }
+  .t2-fresh .t2-file-act { grid-column: 3; }
+}
 
 
 /* MathType 公式渲染（wmf-view.js）：Symbol / MT Extra 必须随页面分发，
