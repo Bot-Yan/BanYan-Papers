@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="assets/facivon.svg">
   <script src="js/theme.js?v=20261116-theme"></script>
   <link rel="stylesheet" href="css/theme.css?v=20261116-theme">
-  <link rel="stylesheet" href="css/tree2.css?v=20261116-word-layout">
+  <link rel="stylesheet" href="css/tree2.css?v=20261116-footer-close">
   <!-- 首屏用到的渲染库不预加载：pdf.js（1.5 MB）等点开文件时按需拉 -->
   <link rel="preconnect" href="/">
 </head>
@@ -96,10 +96,9 @@
           <path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>
         </svg>
       </button>
-      <button class="t2-btn t2-ico-btn" type="button" id="v-close" title="关闭 (Esc)" aria-label="关闭预览">
+      <button class="t2-btn t2-ico-btn" type="button" id="v-close" title="关闭预览 (Esc)" aria-label="关闭预览">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path class="t2-preview-close-icon" d="M6 6l12 12M18 6L6 18"/>
-          <path class="t2-preview-back-icon" d="M19 12H5m7 7-7-7 7-7"/>
+          <path d="M6 6l12 12M18 6L6 18"/>
         </svg>
       </button>
     </div>
@@ -118,7 +117,7 @@
 
   <div class="t2-toast" id="t2-toast" role="status"></div>
 
-  <script type="module" src="js/app.js?v=20261116-playlist"></script>
+  <script type="module" src="js/app.js?v=20261116-playlist-preview-close"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });

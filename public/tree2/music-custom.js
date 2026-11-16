@@ -789,7 +789,7 @@
   /* ---------------- 启动 ---------------- */
 
   function mountThemeToggle() {
-    if (!IS_MUSIC || document.querySelector('.t2-nd-theme')) return;
+    if (!IS_MUSIC || document.body.hasAttribute('data-file-preview') || document.querySelector('.t2-nd-theme')) return;
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 't2-nd-back t2-nd-theme';

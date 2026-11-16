@@ -934,7 +934,7 @@ async function renderFavorites(main) {
     <section class="t2-hero">
       <div class="t2-kicker">我的收藏</div>
       <h1 class="t2-title">★ 收藏夹 <em>${hits.length}</em></h1>
-      <p class="t2-deck">收藏保存在本浏览器（无需登录）。文件行右侧 ☆ 可取消收藏。</p>
+      <p class="t2-deck">收藏保存在本浏览器（无需登录）。点击文件名旁的星标可取消收藏。</p>
     </section>
     <div class="t2-bar">
       <button class="t2-btn" type="button" data-act="fav-back">← 回资料库</button>
@@ -943,7 +943,7 @@ async function renderFavorites(main) {
   if (state.query.fav !== want) return; // 同上
   const ul = main.querySelector('.t2-list');
   if (!hits.length) {
-    ul.innerHTML = '<li class="t2-empty">还没有收藏。在资料库里点文件行的 ☆ 就能收藏，听力、卷子都可以。</li>';
+    ul.innerHTML = '<li class="t2-empty">还没有收藏。点击资料库里文件名旁的星标即可收藏。</li>';
     return;
   }
   for (const h of hits) ul.appendChild(fileRow(h.file, h.path, false, h.season));
@@ -1086,10 +1086,18 @@ function fileRow(file, parent, focus, season) {
   li.className = `t2-file${isOnline(file) ? ' is-online' : ''}`;
   const k = kindOf(file.n);
   const online = isOnline(file);
+  const favorite = favHas(file.k);
   li.innerHTML = `
     <div class="t2-file-ico" data-k="${esc(k)}" title="${esc(kindLabel(k))}">${fileIconSvg(file.n, k)}</div>
-    <div style="min-width:0">
-      <div class="t2-file-name" title="${esc(file.n)}">${esc(file.n)}</div>
+    <div class="t2-file-info">
+      <div class="t2-file-heading">
+        <span class="t2-file-name" title="${esc(file.n)}">${esc(file.n)}</span>
+        <button class="t2-btn t2-file-fav" type="button" data-a="fav" aria-label="收藏" aria-pressed="${favorite}" title="${favorite ? '取消收藏' : '收藏到本浏览器'}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true">
+            <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>
+          </svg>
+        </button>
+      </div>
       <div class="t2-file-sub">
         <span>${esc(kindLabel(k))}</span><span>${fmtSize(file.s)}</span>
         <span class="t2-file-path">${esc(parent || '/')}</span>
@@ -1098,7 +1106,6 @@ function fileRow(file, parent, focus, season) {
       </div>
     </div>
     <div class="t2-file-act">
-      <button class="t2-btn" type="button" data-a="fav" title="收藏到本浏览器">${favHas(file.k) ? '★' : '☆'}</button>
       <button class="t2-btn" type="button" data-a="share"${online ? '' : ' disabled'} title="生成 /s/ 短链发给别人">分享</button>
       <button class="t2-btn" type="button" data-a="view"${online && canRender(file.n) ? '' : ' disabled'}>预览</button>
       <button class="t2-btn primary" type="button" data-a="down"${online ? '' : ' disabled'}>下载</button>
@@ -1106,7 +1113,7 @@ function fileRow(file, parent, focus, season) {
   li.querySelector('[data-a="fav"]').onclick = (e) => {
     e.stopPropagation();
     const on = favToggle(file.k);
-    e.currentTarget.textContent = on ? '★' : '☆';
+    e.currentTarget.setAttribute('aria-pressed', String(on));
     e.currentTarget.title = on ? '取消收藏' : '收藏到本浏览器';
   };
   li.querySelector('[data-a="share"]').onclick = (e) => {
@@ -1149,8 +1156,11 @@ function stopAudio() {
 function showVinylFrame(session, expanded) {
   const show = expanded && session.ready;
   if (show && session.frame.dataset.expanded !== 'true') {
+    session.frame.dataset.enter = String(session.animateOnExpand);
+    session.animateOnExpand = false;
     session.frame.contentWindow.postMessage({ tree2Player: 'opened' }, session.origin);
   }
+  if (!show) delete session.frame.dataset.enter;
   session.frame.dataset.expanded = String(show);
   session.frame.inert = !show;
 }
@@ -1196,13 +1206,10 @@ async function openViewer(file, parent, restore = false, season = state.query.s,
   bind('#v-down', () => (location.href = downloadUrl));
   bind('#v-share', () => doShare(file));
 
+  const animateOpen = !restore && box.dataset.open !== 'true';
+  box.dataset.enter = String(animateOpen && !hasAudio);
   box.dataset.open = 'true';
   box.dataset.audio = String(hasAudio);
-  const hasBack = hasAudio || k === 'docx';
-  box.dataset.back = String(hasBack);
-  const back = $('#v-close');
-  back.setAttribute('aria-label', hasBack ? '返回目录' : '关闭预览');
-  back.title = hasAudio ? '收起为悬浮播放器 (Esc)' : hasBack ? '返回目录 (Esc)' : '关闭 (Esc)';
   document.body.style.overflow = 'hidden';
   if (!restore) {
     writeUrl(false);
@@ -1226,13 +1233,15 @@ async function openViewer(file, parent, restore = false, season = state.query.s,
       mountVinylPlayer(file, parent, season);
       $('#mini-expand').title = file.n;
     }
+    audioSession.animateOnExpand = animateOpen;
     showVinylFrame(audioSession, true);
     syncMiniPlayer();
-    back.focus({ preventScroll: true });
+    $('#v-close').focus({ preventScroll: true });
     return;
   }
 
   if (k === 'image') {
+    body.innerHTML = '<div class="pad" role="status">正在加载图片…</div>';
     void render(body, url, file.n, { isCurrent });
     return;
   }
@@ -1261,6 +1270,7 @@ function closeViewer() {
   const box = $('#viewer');
   if (!box || box.dataset.open !== 'true') return; // 幂等：popstate 与手动关闭只走一次
   box.dataset.open = 'false';
+  delete box.dataset.enter;
   if (audioSession?.ready) showVinylFrame(audioSession, false);
   else stopAudio();
   viewerTicket++;

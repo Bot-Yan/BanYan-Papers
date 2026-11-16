@@ -603,7 +603,7 @@ const themeToggle = `<button class="t2-theme-switch" type="button" data-theme-to
 
 const SHARE_ICONS = {
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM9 21v-7h6v7"/>',
-  back: '<path d="M19 12H5m7 7-7-7 7-7"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   file: '<path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h6"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
   open: '<path d="M3 19V6a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v3M3 19h16a1 1 0 0 0 1-.7l2-6a1 1 0 0 0-1-1.3H7a1 1 0 0 0-1 .7z"/>',
@@ -619,7 +619,13 @@ const SHARE_ICONS = {
   warning: '<path d="M10.3 4.6 2.6 18a1.3 1.3 0 0 0 1.1 2h16.6a1.3 1.3 0 0 0 1.1-2L13.7 4.6a2 2 0 0 0-3.4 0ZM12 9v4m0 3h.01"/>',
 };
 const shareIcon = kind => `<svg class="share-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${SHARE_ICONS[kind]}</svg>`;
-const shareBrand = `<header class="t2-theme-header"><a class="brand" href="/">${shareIcon('home')}备考资料导航</a>${themeToggle}</header>`;
+const shareBrandLink = `<a class="brand" href="/">${shareIcon('home')}备考资料导航</a>`;
+const shareBrand = `<header class="t2-theme-header">${shareBrandLink}${themeToggle}</header>`;
+function shareCloseLink(sourceFolder, season, className) {
+  const href = sourceFolder || `/?s=${encodeURIComponent(season)}`;
+  const label = sourceFolder ? '关闭预览并返回文件夹' : '关闭预览并返回资料库';
+  return `<a class="${className}" href="${escHtml(href)}" aria-label="${label}" title="${label}">${shareIcon('close')}</a>`;
+}
 
 const SHARE_IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 const SHARE_VIDEO = new Set(['.mp4', '.webm']);
@@ -644,14 +650,15 @@ const SHARE_PAGE_CSS = `
  body{margin:0;padding:48px 18px;font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif;color:var(--t2-ink);
       background:radial-gradient(900px 340px at 50% -10%,var(--t2-glow),transparent 70%),var(--t2-paper);min-height:100vh;box-sizing:border-box}
  main{max-width:640px;margin:0 auto}
- main.word-share{max-width:960px}
+ main.word-share{max-width:760px}
  .card{background:var(--t2-card);border:1px solid var(--t2-line);border-radius:14px;padding:26px 26px 22px;box-shadow:var(--t2-shadow)}
  .brand{display:flex;align-items:center;gap:8px;font-weight:700;text-decoration:none;color:var(--t2-ink);margin:0;font-size:15px}
  .t2-theme-header{margin:0 0 18px}
  .share-icon{display:block;flex:none}
- .share-back{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;margin:0 0 14px;
-     border:1px solid var(--t2-line);border-radius:8px;color:var(--t2-ink);text-decoration:none;font-size:13px}
- .share-back:hover{background:var(--t2-soft)}
+ .share-file-header{margin-bottom:12px}
+ .share-close{box-sizing:border-box;flex:none;width:36px;height:36px;display:grid;place-items:center;border-radius:8px;
+     border:1px solid var(--t2-line);color:var(--t2-ink)}
+ .share-close:hover{background:var(--t2-soft)}
  .kind,.f-act a,.down{display:flex;align-items:center;gap:6px}
  .kind .share-icon,.f-act .share-icon,.crumb .share-icon{width:15px;height:15px}
  .crumb .share-icon{display:inline-block;vertical-align:middle;color:var(--t2-muted)}
@@ -685,9 +692,17 @@ const SHARE_PAGE_CSS = `
  .folder-list .f-act a:hover{background:var(--t2-soft)}
  .foot{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 14px;color:var(--t2-muted);font-size:12px;margin:18px 0 0}
  .foot a{color:inherit;text-underline-offset:3px}
+ .word-share .card{padding-block:16px}
+ .word-share .card > h1{margin-bottom:6px}
+ .word-share .share-file-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px}
+ .word-share .share-file-actions .meta{margin:0}
+ .word-share .share-file-actions .down{padding:6px 12px;margin:0;font-size:13px}
+ .t2-landing-word{min-height:0;max-height:min(55svh,30rem);overflow:auto;scrollbar-gutter:stable;margin-top:12px;
+     padding:6px;border:1px solid var(--t2-line);border-radius:8px;background:var(--t2-field)}
  .t2-landing-word .t2-doc{width:100%;min-width:0;overflow-x:auto;color:#222;color-scheme:light}
  .t2-landing-word .docx-wrapper{width:max-content;margin-inline:auto;padding:0;background:transparent}
  .t2-landing-word .docx-wrapper > section.docx{box-sizing:border-box;margin-bottom:12px}
+ .t2-landing-word .docx-wrapper > section.docx:last-child{margin-bottom:0}
  .t2-landing-doc > :is(table,pre){color:var(--t2-ink)}
  @media(max-width:480px){
    body{padding:20px 10px}
@@ -728,9 +743,9 @@ async function keyMetaMap() {
   return map;
 }
 
-function shareSourceFolder(req) {
+function shareSourceFolder(shareUrl) {
   const base = 'http://tree2.local';
-  const from = new URL(req.url, base).searchParams.get('from');
+  const from = shareUrl.searchParams.get('from');
   if (!from?.startsWith('/d/')) return '';
   const folder = new URL(from, base);
   return folder.origin === base && /^\/d\/(?:id\/)?\d{4}\/.+/.test(folder.pathname) ? folder.pathname : '';
@@ -739,8 +754,8 @@ function shareSourceFolder(req) {
 /** 文件分享页：按类型加载站内预览，并提供单独的下载入口。 */
 function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, visitsLabel = '', audioPending = false }) {
   const filesUrl = `/api/tree2/files/${encodeURIComponent(season)}?k=${encodeURIComponent(key)}&n=${encodeURIComponent(name)}`;
-  const sourceFolder = shareSourceFolder(req);
-  const backUrl = sourceFolder || `/?s=${encodeURIComponent(season)}`;
+  const sourceFolder = shareSourceFolder(new URL(req.url, 'http://tree2.local'));
+  const isWord = SHARE_WORD.has(ext);
   // 客户端渲染类预览共用的净化器 + 容器
   const T2_CLEAN = '<script>function t2Clean(root){root.querySelectorAll(\'script,iframe,object,embed,link,meta\').forEach(function(e){e.remove()});[].forEach.call(root.querySelectorAll(\'*\'),function(e){[].slice.call(e.attributes).forEach(function(a){if(/^on/i.test(a.name))e.removeAttribute(a.name)})})}</script>';
   let preview = '';
@@ -801,8 +816,8 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
       `<div class="preview"><audio controls preload="metadata" src="${escHtml(filesUrl)}"></audio>` +
       (audioPending ? `<p class="hint">音频正在同步到音乐库，同步完成后这个链接会直接打开在线播放页（最多一小时）。</p>` : ``) +
       `</div>`;
-  } else if (SHARE_WORD.has(ext)) {
-    preview = `<div id="t2-preview" class="preview t2-landing-doc t2-landing-word">正在渲染 Word 预览…</div>
+  } else if (isWord) {
+    preview = `<div id="t2-preview" class="preview t2-landing-doc t2-landing-word" role="region" aria-label="Word 文档预览" tabindex="0">正在渲染 Word 预览…</div>
 <script type="module">
   const host = document.getElementById('t2-preview');
   import('/js/preview.js?v=20261116-word-layout')
@@ -856,18 +871,19 @@ function sendShareLanding(req, res, { key, name, ext, size, dateLabel, season, v
 </` + `script>`;
   }
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-store">
 <title>${escHtml(name)} · 文件分享</title>
- ${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main${SHARE_WORD.has(ext) ? ' class="word-share"' : ''}>
+ ${SHARE_PAGE_THEME}<style>${SHARE_PAGE_CSS}</style></head><body><main${isWord ? ' class="word-share"' : ''}>
 <div class="card">
-${shareBrand}
-<a class="share-back" href="${escHtml(backUrl)}">${shareIcon('back')}${sourceFolder ? '返回文件夹' : '返回资料库'}</a>
+<header class="t2-theme-header share-file-header">${shareBrandLink}${shareCloseLink(sourceFolder, season, 'share-close')}</header>
 <p class="kind">${shareIcon(shareFileIcon(ext))}${escHtml(kindLabelOf(ext))} · 文件分享</p>
 <h1>${escHtml(name)}</h1>
+<div class="share-file-actions">
 <p class="meta">${fmtBytes(size)} · ${escHtml(dateLabel)}${visitsLabel}</p>
 <a class="down" href="${escHtml(filesUrl)}&download=1" download>${shareIcon('download')}下载文件</a>
-<p class="hint">手机上长按上面的按钮也可以选择用其他应用打开。</p>
+</div>
+${isWord ? '' : '<p class="hint">手机上长按上面的按钮也可以选择用其他应用打开。</p>'}
 ${preview}
 </div>
 ${shareFooter}
@@ -906,7 +922,7 @@ const scriptJson = value => JSON.stringify(JSON.stringify(value)).replaceAll('<'
 route('GET', /^\/api\/tree2\/vinyl\/playlist\.js$/, (req, res) =>
   serveStatic(req, res, '/tree2/music-playlist.js'));
 
-route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req, res, [, year, track]) => {
+route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req, res, [, year, track], url) => {
   requireRead(req);
   const key = vinylKey(track);
   const stat = await fsp.stat(objPath(key)).catch(error => {
@@ -916,6 +932,8 @@ route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req
   if (!stat?.isFile()) throw new HttpError(404, '音频文件不存在');
   const name = (await keyMetaMap()).get(key)?.name || track;
   const title = name.slice(0, name.length - path.extname(name).length);
+  const sourceFolder = shareSourceFolder(url);
+  const standalone = url.searchParams.get('t2embed') !== '1';
   const config = {
     version: '0.64.2 (10114574)',
     defaultLanguage: '',
@@ -934,11 +952,12 @@ route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/${vinylTrack}$`), async (req
 ${SHARE_PAGE_THEME}
 <script>window.process={env:{}};window.__APP_CONFIG__=${scriptJson(config)};window.__SHARE_INFO__=${scriptJson(info)};</script>
 <link rel="stylesheet" href="${VINYL_ASSETS}/index-uCXnEN-G.css">
-<link rel="stylesheet" href="/music-custom.css?v=20261116-playlist">
+<link rel="stylesheet" href="/music-custom.css?v=20261116-preview-close">
 <script src="/api/tree2/vinyl/playlist.js?v=1"></script>
-<script defer src="/music-custom.js?v=20261116-playlist"></script>
+<script defer src="/music-custom.js?v=20261116-playlist-share-preview"></script>
 <script type="module" src="${VINYL_ASSETS}/index-7wbOXZOY.js"></script>
-</head><body><div id="root"></div></body></html>`;
+</head><body${standalone ? ' data-file-preview' : ''}><div id="root"></div>
+${standalone ? `<div class="t2-nd-top">${shareCloseLink(sourceFolder, year, 't2-nd-back t2-nd-close')}</div>` : ''}</body></html>`;
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -956,13 +975,14 @@ route('GET', new RegExp(`^/api/tree2/vinyl/(\\d{4})/share/(s|d|img)/${vinylTrack
   return servePreviewBytes(req, res, key, name, { download: type === 'd' });
 });
 
-function redirectVinyl(req, res, year, key) {
-  res.writeHead(302, { ...cors(req), Location: vinylPath(year, key), 'Cache-Control': 'no-store' });
+function redirectVinyl(req, res, year, key, sourceFolder) {
+  const destination = vinylPath(year, key) + (sourceFolder ? `?from=${encodeURIComponent(sourceFolder)}` : '');
+  res.writeHead(302, { ...cors(req), Location: destination, 'Cache-Control': 'no-store' });
   res.end();
 }
 
 // 确定性分享链接：/s/<存储键>
-route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (req, res, [, key]) => {
+route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (req, res, [, key], url) => {
   const st = await fsp.stat(objPath(key)).catch(() => null);
   if (!st || !st.isFile()) {
     res.writeHead(404, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -975,11 +995,12 @@ route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (re
   const season = (meta && meta.season) || (await latestManifestYear()) || '2026';
 
   if (AUDIO_EXT.has(ext)) {
-    if (!cfg.privateRead && key === vinylKey(path.basename(key))) return redirectVinyl(req, res, season, key);
+    const sourceFolder = shareSourceFolder(url);
+    if (!cfg.privateRead && key === vinylKey(path.basename(key))) return redirectVinyl(req, res, season, key, sourceFolder);
     const sha = path.basename(key, ext);
     const am = (await readJsonCached(ND_MAP_FILE, 'map', 'mapMtime')) || {};
     const sm = (await readJsonCached(ND_SHARE_FILE, 'shares', 'sharesMtime')) || {};
-    if (am[sha] && sm[sha]) {
+    if (!sourceFolder && am[sha] && sm[sha]) {
       const ndCfg = await readJsonCached(ND_CFG_FILE, 'cfg', 'cfgMtime');
       res.writeHead(302, { ...cors(req), Location: musicShareUrl(ndCfg, sm[sha], key), 'Cache-Control': 'no-store' });
       return res.end();

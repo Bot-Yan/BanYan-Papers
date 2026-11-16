@@ -220,13 +220,13 @@ body:has(.audio-lists-panel.show) :is(.t2-nd-top, .t2-nd-theme, .t2-nd-pet, .t2-
   background: #fff;
   border-color: rgba(22, 50, 63, .22);
 }
-.t2-nd-top .t2-nd-collapse {
+.t2-nd-top :is(.t2-nd-collapse, .t2-nd-close) {
   width: 44px;
   height: 44px;
   padding: 0;
   cursor: pointer;
-  color: #128054 !important;
 }
+.t2-nd-top .t2-nd-collapse { color: #128054 !important; }
 html[data-theme="dark"] .t2-nd-top .t2-nd-collapse { color: #71deac !important; }
 html[data-theme="dark"] .t2-nd-back {
   border-color: rgba(127, 214, 255, .28);
