@@ -97,9 +97,15 @@ test('catalogue writes, scoped guest tokens and resumable parts', async t => {
   }
   t.after(async () => { await stop(); await rm(root, { recursive: true, force: true }); });
   await Promise.all([mkdir(data), mkdir(shares), mkdir(serverDir)]);
+  // 把整个 scripts/ 复制过去，而不是逐个点名：
+  // 服务端拆出子模块后（如 tree2-ingest-push.mjs），逐个复制很容易漏，
+  // 漏了就会 ERR_MODULE_NOT_FOUND，而这里恰恰是部署前的门禁测试。
   await copyFile(script, fixtureScript);
-  await copyFile(new URL('../scripts/tree2-arrange.mjs', import.meta.url), join(serverDir, 'tree2-arrange.mjs'));
-  await copyFile(new URL('../scripts/tree2-folders.mjs', import.meta.url), join(serverDir, 'tree2-folders.mjs'));
+  const scriptsDir = fileURLToPath(new URL('../scripts', import.meta.url));
+  for (const entry of await readdir(scriptsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.mjs') || entry.name === 'tree2-files-server.mjs') continue;
+    await copyFile(join(scriptsDir, entry.name), join(serverDir, entry.name));
+  }
   for (const [directory, file] of [['js', 'theme.js'], ['css', 'theme.css']]) {
     const fixtureDir = join(root, 'public', 'tree2', directory);
     await mkdir(fixtureDir, { recursive: true });
