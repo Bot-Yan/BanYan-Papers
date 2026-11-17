@@ -1985,11 +1985,23 @@ async function attachToManifest(year, m, key, body, actor, uploadKind) {
   await appendUplog({ season: year, key, name, folder: segs.join('/'), sha256: body.sha256, actor, at: new Date().toISOString() });
 }
 
-const updateToken = process.env.TREE2_UPDATE_TOKEN || '';
+async function readUpdateCredentials() {
+  if (process.env.TREE2_UPDATE_TOKEN || process.env.TREE2_UPDATE_ORIGIN) {
+    return { token: process.env.TREE2_UPDATE_TOKEN, origin: process.env.TREE2_UPDATE_ORIGIN };
+  }
+  try {
+    return JSON.parse(await fsp.readFile(path.join(SHARES_DIR, 'update-push.json'), 'utf8')) ?? {};
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('[tree2] 无法读取入库推送配置', error.code || error.name);
+    return {};
+  }
+}
+const updateCredentials = cfg.token && !cfg.privateRead ? await readUpdateCredentials() : {};
+const updateToken = typeof updateCredentials.token === 'string' ? updateCredentials.token : '';
 const updateDirectory = path.join(SHARES_DIR, 'update-outbox');
 const updateEndpoint = (() => {
   if (cfg.privateRead || !cfg.token || !/^[A-Za-z0-9_-]{32,128}$/.test(updateToken)) return null;
-  const configured = process.env.TREE2_UPDATE_ORIGIN;
+  const configured = updateCredentials.origin;
   if (!configured) return null;
   try {
     const url = new URL(configured);

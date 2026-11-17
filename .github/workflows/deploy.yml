@@ -72,6 +72,35 @@ jobs:
             ./ \
             "${SERVER_USER}@${SERVER_HOST}:${DEPLOY_PATH}/"
 
+      - name: Configure library update notifications
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          TREE2_UPDATE_TOKEN: ${{ secrets.TREE2_UPDATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TREE2_UPDATE_TOKEN" ]]; then exit 0; fi
+          test "$DEPLOY_PATH" = /srv/treenext
+          [[ "$TREE2_UPDATE_TOKEN" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
+          { printf '%s\n' "$TREE2_UPDATE_TOKEN"; cat <<'REMOTE'
+          set -euo pipefail
+          [[ "$token" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
+          service_user="$(systemctl show tree2 --property=User --value)"
+          umask 077
+          dir=/srv/treenext/data
+          file="$(mktemp "$dir/.update-push.XXXXXXXX")"
+          trap 'rm -f -- "$file"' EXIT
+          printf '{"origin":"https://console.example.com","token":"%s"}\n' "$token" > "$file"
+          if [[ -n "$service_user" && "$service_user" != root && "$service_user" != "$(id -un)" ]]; then
+            setfacl -m "u:$service_user:r" "$file"
+          fi
+          mv -f -- "$file" "$dir/update-push.json"
+          REMOTE
+          } | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
+            'IFS= read -r token && export token && bash -s'
+
       # SERVER_USER 需要有重启权限：root 直接可用；专用部署用户配 sudoers NOPASSWD
       - name: Restart service and verify
         env:

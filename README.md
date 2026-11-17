@@ -54,6 +54,9 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 `031-resource-push-digests` 迁移并更新 Bot，再在 Console「Bot → 订阅推送 → TreeNext」配置目标群。
 默认关闭推送，默认上传来源是管理上传。需要时可单独选择顾客口令上传。
 
+通过 GitHub Actions 发布时，把 `TREE2_UPDATE_TOKEN` 配在仓库的 `production` Environment。
+工作流会将令牌和生产地址写入受保护的 `data/update-push.json`。进程环境中的配置优先。
+
 入库事件通过运行时 `data/update-outbox/` 重试发往 Backend。启用合图时，同群从最近一次入库等待约两分钟，从第一条最多等待约五分钟。群消息附稳定的批次目录链接。离线重扫通过自己的发布工具写清单，目前未接入此事件。
 
 ## 本地开发
