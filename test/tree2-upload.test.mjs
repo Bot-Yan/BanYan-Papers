@@ -110,6 +110,10 @@ import fs from 'node:fs';
 import { Writable } from 'node:stream';
 import { basename } from 'node:path';
 const create = fs.createWriteStream;
+const fetchUpstream = globalThis.fetch;
+globalThis.fetch = (url, options) => String(url).startsWith('https://tree-updates.example.test/')
+  ? Promise.resolve(new Response(null, { status: 503 }))
+  : fetchUpstream(url, options);
 fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedStream.sha256}.txt.')
   ? new Writable({ write(chunk, encoding, callback) { callback(Object.assign(new Error('fixture disk write failed'), { code: 'EIO' })); } })
   : create(file, ...args);
@@ -124,9 +128,9 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     writeFile(tokensFile, JSON.stringify([legacy, scopedLegacy])),
   ]);
   let origin;
-  async function start() {
+  async function start(updateEnv = {}) {
     child = spawn(process.execPath, ['--import', pathToFileURL(faultInjection).href, fixtureScript, '--port', '0', '--data', data, '--store', store, '--token', adminToken,
-      '--allow-origin', 'https://allowed.example'], { env: { ...process.env, TREE2_SHARES_DIR: shares }, stdio: ['ignore', 'pipe', 'pipe'] });
+      '--allow-origin', 'https://allowed.example'], { env: { ...process.env, TREE2_SHARES_DIR: shares, TREE2_UPDATE_ORIGIN: '', TREE2_UPDATE_TOKEN: '', ...updateEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', bytes => { stderr += bytes; });
     const lines = createInterface({ input: child.stdout });
@@ -425,5 +429,28 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     const replacement = (await readManifest(year)).batches[0].tree;
     assert.notEqual(replacement.folderId, rootFolder.folderId);
     assert.equal((await get(stablePath(replacement))).status, 200);
+  });
+
+  await t.test('only committed and changed catalogue entries stage an update', async () => {
+    await stop();
+    await start({ TREE2_UPDATE_ORIGIN: 'https://tree-updates.example.test', TREE2_UPDATE_TOKEN: 'u'.repeat(32) });
+    const outbox = join(shares, 'update-outbox');
+    const entries = () => readdir(outbox).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    const file = fixture('outbox fixture');
+    const name = '新试卷.txt';
+    assert.equal((await part(file)).status, 200);
+    assert.deepEqual(await entries(), []);
+    assert.equal((await commit(file, { name })).body.attached, true);
+    assert.equal((await commit(file, { name, parts: 0 })).body.attached, true);
+    assert.equal((await commit(file, { name: '答案.txt', parts: 0 })).body.attached, true);
+    const files = await entries();
+    assert.equal(files.length, 2);
+    const events = await Promise.all(files.map(async file => JSON.parse(await readFile(join(outbox, file), 'utf8')).event));
+    const stableBatch = (await readManifest('2026')).batches.find(batch => batch.name === 'Shared');
+    assert.ok(events.every(event => event.origin === 'staff' && event.batchId === stableBatch.tree.folderId));
+    assert.deepEqual(events.map(event => event.name).sort(), [name, '答案.txt'].sort());
   });
 });

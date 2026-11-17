@@ -1864,7 +1864,7 @@ route('POST', /^\/api\/tree2\/files\/([^/]+)\/commit$/, async (req, res, [, year
       const next = rec ? tokens.map(row => row === rec ? { ...rec, uses: (rec.uses || 0) + 1 } : row) : null;
       if (next) await saveCTokens(next);
       try {
-        await attachToManifest(year, manifest, key, { folder, name, size, sha256: expect }, actorOf(req));
+        await attachToManifest(year, manifest, key, { folder, name, size, sha256: expect }, actorOf(req), auth.kind);
       } catch (error) {
         if (next) await saveCTokens(tokens);
         throw error;
@@ -1919,7 +1919,7 @@ function newBatch(name) {
   };
 }
 
-async function attachToManifest(year, m, key, body, actor = '') {
+async function attachToManifest(year, m, key, body, actor, uploadKind) {
   const file = path.join(cfg.data, `${year}.json`);
   const { folder: segs, name, size } = body;
   const ext = (/\.([a-z0-9]{1,8})$/i.exec(name) || [, ''])[1].toLowerCase();
@@ -1942,6 +1942,7 @@ async function attachToManifest(year, m, key, body, actor = '') {
   }
   parent.c ||= [];
   const existing = (parent.c || []).find((c) => c.t === 'f' && c.n === name);
+  const changed = existing?.k !== key;
   const attributes = { s: size, h: body.sha256, k: key, e: ext ? `.${ext}` : '' };
   if (existing) Object.assign(existing, attributes);
   else {
@@ -1955,12 +1956,101 @@ async function attachToManifest(year, m, key, body, actor = '') {
   recalcManifestStats(m);
   m.totals.uniqueFiles = null;
 
-  await writeJsonAtomic(file, m);
+  let notification;
+  if (changed && updateEndpoint && /^20\d{2}$/.test(year)) {
+    try {
+      const at = new Date().toISOString(), eventId = crypto.randomUUID();
+      notification = path.join(updateDirectory, `${Date.now()}-${eventId}.json`);
+      await fsp.mkdir(updateDirectory, { recursive: true });
+      await writeJsonAtomic(notification, {
+        event: { eventId, at, year, batchId: batch.tree.folderId, batch: updateLabel(batch.name, 200, '资料批次'),
+          name: updateLabel(name, 300, '未命名文件'), origin: uploadKind === 'admin' ? 'staff' : 'guest' },
+        key, folder: segs, name,
+      });
+    } catch (error) {
+      notification = undefined;
+      console.error('[tree2] 无法保存入库推送事件', error.code || error.name);
+    }
+  }
+  try {
+    await writeJsonAtomic(file, m);
+  } catch (error) {
+    if (notification) await fsp.rm(notification, { force: true }).catch(() => {});
+    throw error;
+  }
   manifestCache.delete(year);
 
   // 记录「本机上传」来源（区别于 pan-sync 从本地盘发布的那批），
   // 本地的 tree2-publish 每次发布会把这些采纳回本地清单，避免被重建覆盖
   await appendUplog({ season: year, key, name, folder: segs.join('/'), sha256: body.sha256, actor, at: new Date().toISOString() });
+}
+
+const updateToken = process.env.TREE2_UPDATE_TOKEN || '';
+const updateDirectory = path.join(SHARES_DIR, 'update-outbox');
+const updateEndpoint = (() => {
+  if (cfg.privateRead || !cfg.token || !/^[A-Za-z0-9_-]{32,128}$/.test(updateToken)) return null;
+  const configured = process.env.TREE2_UPDATE_ORIGIN;
+  if (!configured) return null;
+  try {
+    const url = new URL(configured);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error();
+    return new URL('/api/treenext/updates', url);
+  } catch {
+    console.error('[tree2] TREE2_UPDATE_ORIGIN 需要是 HTTPS 源站');
+    return null;
+  }
+})();
+let sendingUpdates = false;
+const updateLabel = (value, limit, fallback) => value.slice(0, limit).toWellFormed()
+  .replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, ' ').trim() || fallback;
+
+async function flushUpdates() {
+  if (sendingUpdates || !updateEndpoint) return;
+  sendingUpdates = true;
+  try {
+    const files = await fsp.readdir(updateDirectory).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    const pending = await writeLibrary(async () => {
+      const events = [];
+      const manifests = new Map();
+      for (const filename of files.filter(name => /^\d{13}-[a-f0-9-]{36}\.json$/.test(name)).sort().slice(0, 150)) {
+        const file = path.join(updateDirectory, filename);
+        let queued;
+        try { queued = JSON.parse(await fsp.readFile(file, 'utf8')); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        const { event, key, folder, name } = queued;
+        if (!manifests.has(event.year)) manifests.set(event.year, await readManifestFile(event.year).catch(error => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }));
+        const manifest = manifests.get(event.year);
+        const batch = manifest?.batches?.find(item => item.tree.folderId === event.batchId);
+        // A restart can leave an event staged before its manifest replacement.
+        // Check the actual entry before reporting it as published.
+        const parent = folder.slice(1).reduce((node, segment) => node?.c?.find(child => child.t === 'd' && child.n === segment), batch?.tree);
+        if (parent?.c?.some(child => child.t === 'f' && child.n === name && child.k === key)) {
+          events.push({ file, event: { ...event, batch: updateLabel(batch.name, 200, '资料批次') } });
+        } else await fsp.rm(file, { force: true });
+      }
+      return events;
+    });
+    for (const { file, event } of pending) {
+      const response = await fetch(updateEndpoint, {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
+        headers: { Authorization: `Bearer ${updateToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+      });
+      await response.body?.cancel();
+      if (response.status !== 202) throw new Error(`HTTP ${response.status}`);
+      await fsp.rm(file, { force: true });
+    }
+  } catch (error) {
+    console.error('[tree2] 入库推送暂不可用，待重试', error.message);
+  } finally {
+    sendingUpdates = false;
+  }
 }
 
 const UPLOG_FILE = path.join(SHARES_DIR, 'uplog.json');
@@ -2321,6 +2411,10 @@ function onListenError(error) {
 server.once('error', onListenError);
 server.listen(cfg.port, cfg.host, () => {
   server.off('error', onListenError);
+  if (updateEndpoint) {
+    setInterval(() => void flushUpdates(), 5000).unref();
+    void flushUpdates();
+  }
   const addr = `${cfg.host}:${server.address().port}`;
   console.log(`tree2 文件服务已启动  http://${addr}`);
   console.log(`  静态站  http://${addr}/tree2/index.html?api=http://${addr}`);

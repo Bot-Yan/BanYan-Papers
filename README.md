@@ -47,6 +47,15 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 
 如果离线整理中删除并同名重建了批次或目录，重复使用 `--new "批次名/子目录名"` 标记对应路径，批次根目录直接使用批次名。标记的目录及其子目录会获得新 ID。发布前核对线上快照仍是最新版本，避免把重扫期间的新变更覆盖掉。
 
+## 入库订阅
+
+在 TreeNext 服务配置 `TREE2_UPDATE_ORIGIN`（业务 Backend 的 HTTPS 源站）和
+`TREE2_UPDATE_TOKEN`。在 Backend 设置相同的独立令牌，先应用
+`031-resource-push-digests` 迁移并更新 Bot，再在 Console「Bot → 订阅推送 → TreeNext」配置目标群。
+默认关闭推送，默认上传来源是管理上传。需要时可单独选择顾客口令上传。
+
+入库事件通过运行时 `data/update-outbox/` 重试发往 Backend。启用合图时，同群从最近一次入库等待约两分钟，从第一条最多等待约五分钟。群消息附稳定的批次目录链接。离线重扫通过自己的发布工具写清单，目前未接入此事件。
+
 ## 本地开发
 
 ```text
