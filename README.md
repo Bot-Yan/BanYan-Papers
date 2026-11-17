@@ -7,6 +7,7 @@ tree2 内容站 + 内容寻址文件库（files.example.com）。服务入口为
 | 服务器路径 | 归属 | 部署行为 |
 |---|---|---|
 | `scripts/tree2-*.mjs` | 仓库 | rsync 覆盖 + `systemctl restart tree2` |
+| `scripts/tree2-ingest-push.mjs` | 仓库 | 入库推送模块（队列/发送/重试），见「入库订阅 → 代码位置」 |
 | `public/tree2/`（除 data/ 与根目录 2026/2027.json） | 仓库 | rsync 覆盖 |
 | `public/tree2/music-custom.js` / `music-custom.css` | 仓库（给 Navidrome 用，不是 tree2 页面的资源） | rsync 覆盖；由 Navidrome 的 customhead/theme 引用本站的这两个地址，实现 ±15s/倍速/黑胶播放页外观。改完这两个文件要同步 Navidrome 侧的引用（文件名没变则不用） |
 | `public/tree2/data/`（2026/2027/seasons.json） | 服务器（运行时清单，上传/删除/重扫都会改写） | `.deployignore` 保护 |
@@ -58,6 +59,40 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 工作流会将令牌和生产地址写入受保护的 `data/update-push.json`。进程环境中的配置优先。
 
 入库事件通过运行时 `data/update-outbox/` 重试发往 Backend。启用合图时，同群从最近一次入库等待约两分钟，从第一条最多等待约五分钟。群消息附稳定的批次目录链接。离线重扫通过自己的发布工具写清单，目前未接入此事件。
+
+### 代码位置
+
+推送逻辑单独放在 `scripts/tree2-ingest-push.mjs`，`tree2-files-server.mjs` 只注入依赖、启轮询，不参与队列和发送细节：
+
+| 文件 | 职责 |
+|---|---|
+| `scripts/tree2-ingest-push.mjs` | 读配置、校验源站、事件入队、投递重试。不认识 manifest 结构 |
+| `scripts/tree2-files-server.mjs` | 入库成功时调 `enqueue()`；启动时调 `start()`；提供 `writeLibrary` / `readManifest` 两个能力 |
+
+模块导出：
+
+```js
+import { createIngestPush, readUpdateCredentials, resolveUpdateEndpoint, updateLabel } from './tree2-ingest-push.mjs';
+
+const credentials = await readUpdateCredentials(SHARES_DIR);        // 环境变量优先，其次 data/update-push.json
+const endpoint = resolveUpdateEndpoint(cfg, credentials);           // 不满足条件返回 null（=不推送）
+const push = createIngestPush({ sharesDir, endpoint, token, writeLibrary, readManifest });
+
+await push.enqueue({ year, batchId, batch, name, origin, key, folder });  // 入库成功时
+push.cancel(file);                                                        // 入库事务失败时撤回
+push.start();                                                             // 服务启动时，返回停止函数
+```
+
+### 行为约定
+
+- **只推新增或内容变更**：入库时 `changed`（`existing.k !== key`）才入队，重传同一个文件不会重复推。
+- **先落盘再发送**：事件写成 `update-outbox/<毫秒>-<uuid>.json`，服务重启不丢。
+- **202 才算成功**：Backend 返回非 202 就当失败，事件保留，每 5 秒重试；成功才删文件。
+- **发送前回查**：重启可能留下「事件已暂存、但 manifest 尚未替换」的残局，投递前确认文件真在 manifest 里，否则直接丢弃，避免误报。
+- **只处理 20xx 年目录**：`/^20\d{2}$/`，其他目录不入队。
+- **源站必须是纯 HTTPS**：带路径、查询串、账号密码的一律拒绝。
+- **标签清洗**：批次名/文件名截断并去掉控制字符与双向文本控制符，防止注入群消息。
+- **未配置时全部空转**：`endpoint` 为 null 时 `enqueue()` / `flush()` 都不做事，不影响上传本身。
 
 ## 本地开发
 

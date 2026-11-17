@@ -45,6 +45,11 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ArrangeError, planArrangement } from './tree2-arrange.mjs';
+import {
+  createIngestPush,
+  readUpdateCredentials,
+  resolveUpdateEndpoint,
+} from './tree2-ingest-push.mjs';
 import { assignFolderIds, folderIndex, historicalFolderId, isFolderId, newFolder, rememberFolderChanges, removedFolder } from './tree2-folders.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1956,26 +1961,22 @@ async function attachToManifest(year, m, key, body, actor, uploadKind) {
   recalcManifestStats(m);
   m.totals.uniqueFiles = null;
 
-  let notification;
-  if (changed && updateEndpoint && /^20\d{2}$/.test(year)) {
-    try {
-      const at = new Date().toISOString(), eventId = crypto.randomUUID();
-      notification = path.join(updateDirectory, `${Date.now()}-${eventId}.json`);
-      await fsp.mkdir(updateDirectory, { recursive: true });
-      await writeJsonAtomic(notification, {
-        event: { eventId, at, year, batchId: batch.tree.folderId, batch: updateLabel(batch.name, 200, '资料批次'),
-          name: updateLabel(name, 300, '未命名文件'), origin: uploadKind === 'admin' ? 'staff' : 'guest' },
-        key, folder: segs, name,
-      });
-    } catch (error) {
-      notification = undefined;
-      console.error('[tree2] 无法保存入库推送事件', error.code || error.name);
-    }
-  }
+  // 入库成功：排队一条推送事件（具体怎么发在 tree2-ingest-push.mjs 里）
+  const notification = changed
+    ? await ingestPush.enqueue({
+        year,
+        batchId: batch.tree.folderId,
+        batch: batch.name,
+        name,
+        origin: uploadKind,
+        key,
+        folder: segs,
+      })
+    : undefined;
   try {
     await writeJsonAtomic(file, m);
   } catch (error) {
-    if (notification) await fsp.rm(notification, { force: true }).catch(() => {});
+    ingestPush.cancel(notification);
     throw error;
   }
   manifestCache.delete(year);
@@ -1985,85 +1986,16 @@ async function attachToManifest(year, m, key, body, actor, uploadKind) {
   await appendUplog({ season: year, key, name, folder: segs.join('/'), sha256: body.sha256, actor, at: new Date().toISOString() });
 }
 
-async function readUpdateCredentials() {
-  if (process.env.TREE2_UPDATE_TOKEN || process.env.TREE2_UPDATE_ORIGIN) {
-    return { token: process.env.TREE2_UPDATE_TOKEN, origin: process.env.TREE2_UPDATE_ORIGIN };
-  }
-  try {
-    return JSON.parse(await fsp.readFile(path.join(SHARES_DIR, 'update-push.json'), 'utf8')) ?? {};
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('[tree2] 无法读取入库推送配置', error.code || error.name);
-    return {};
-  }
-}
-const updateCredentials = cfg.token && !cfg.privateRead ? await readUpdateCredentials() : {};
-const updateToken = typeof updateCredentials.token === 'string' ? updateCredentials.token : '';
-const updateDirectory = path.join(SHARES_DIR, 'update-outbox');
-const updateEndpoint = (() => {
-  if (cfg.privateRead || !cfg.token || !/^[A-Za-z0-9_-]{32,128}$/.test(updateToken)) return null;
-  const configured = updateCredentials.origin;
-  if (!configured) return null;
-  try {
-    const url = new URL(configured);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error();
-    return new URL('/api/treenext/updates', url);
-  } catch {
-    console.error('[tree2] TREE2_UPDATE_ORIGIN 需要是 HTTPS 源站');
-    return null;
-  }
-})();
-let sendingUpdates = false;
-const updateLabel = (value, limit, fallback) => value.slice(0, limit).toWellFormed()
-  .replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, ' ').trim() || fallback;
-
-async function flushUpdates() {
-  if (sendingUpdates || !updateEndpoint) return;
-  sendingUpdates = true;
-  try {
-    const files = await fsp.readdir(updateDirectory).catch(error => {
-      if (error.code === 'ENOENT') return [];
-      throw error;
-    });
-    const pending = await writeLibrary(async () => {
-      const events = [];
-      const manifests = new Map();
-      for (const filename of files.filter(name => /^\d{13}-[a-f0-9-]{36}\.json$/.test(name)).sort().slice(0, 150)) {
-        const file = path.join(updateDirectory, filename);
-        let queued;
-        try { queued = JSON.parse(await fsp.readFile(file, 'utf8')); }
-        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-        const { event, key, folder, name } = queued;
-        if (!manifests.has(event.year)) manifests.set(event.year, await readManifestFile(event.year).catch(error => {
-          if (error.code === 'ENOENT') return null;
-          throw error;
-        }));
-        const manifest = manifests.get(event.year);
-        const batch = manifest?.batches?.find(item => item.tree.folderId === event.batchId);
-        // A restart can leave an event staged before its manifest replacement.
-        // Check the actual entry before reporting it as published.
-        const parent = folder.slice(1).reduce((node, segment) => node?.c?.find(child => child.t === 'd' && child.n === segment), batch?.tree);
-        if (parent?.c?.some(child => child.t === 'f' && child.n === name && child.k === key)) {
-          events.push({ file, event: { ...event, batch: updateLabel(batch.name, 200, '资料批次') } });
-        } else await fsp.rm(file, { force: true });
-      }
-      return events;
-    });
-    for (const { file, event } of pending) {
-      const response = await fetch(updateEndpoint, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
-        headers: { Authorization: `Bearer ${updateToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(event),
-      });
-      await response.body?.cancel();
-      if (response.status !== 202) throw new Error(`HTTP ${response.status}`);
-      await fsp.rm(file, { force: true });
-    }
-  } catch (error) {
-    console.error('[tree2] 入库推送暂不可用，待重试', error.message);
-  } finally {
-    sendingUpdates = false;
-  }
-}
+// 入库推送：队列、发送、重试全在 tree2-ingest-push.mjs。
+// 这里只负责把「读配置 / 读 manifest」这两项能力注进去，然后起轮询。
+const updateCredentials = cfg.token && !cfg.privateRead ? await readUpdateCredentials(SHARES_DIR) : {};
+const ingestPush = createIngestPush({
+  sharesDir: SHARES_DIR,
+  endpoint: resolveUpdateEndpoint(cfg, updateCredentials),
+  token: typeof updateCredentials.token === 'string' ? updateCredentials.token : '',
+  writeLibrary,
+  readManifest: readManifestFile,
+});
 
 const UPLOG_FILE = path.join(SHARES_DIR, 'uplog.json');
 
@@ -2423,10 +2355,8 @@ function onListenError(error) {
 server.once('error', onListenError);
 server.listen(cfg.port, cfg.host, () => {
   server.off('error', onListenError);
-  if (updateEndpoint) {
-    setInterval(() => void flushUpdates(), 5000).unref();
-    void flushUpdates();
-  }
+  // 计入目录配置齐了才起推送轮询；没配就是空转，不影响别的功能
+  if (ingestPush.enabled()) ingestPush.start();
   const addr = `${cfg.host}:${server.address().port}`;
   console.log(`tree2 文件服务已启动  http://${addr}`);
   console.log(`  静态站  http://${addr}/tree2/index.html?api=http://${addr}`);
