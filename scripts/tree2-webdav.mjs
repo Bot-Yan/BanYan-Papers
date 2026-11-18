@@ -22,12 +22,26 @@ import path from 'node:path';
 
 const XML = 'application/xml; charset=utf-8';
 
+/** 新建批次节点（与主服务 newBatch 同结构：名字推导 stage/type/date + 空目录树）。 */
+function newBatch({ name, stageOf, typeOf }) {
+  return {
+    name,
+    stage: stageOf(name),
+    type: typeOf(name),
+    date: (/(\d{4}[.\-年]\d{1,2})/.exec(name) || [, ''])[1],
+    files: 0, dirs: 0, bytes: 0, subj: [],
+    tree: { n: name, t: 'd', folderId: randomUUID(), c: [] },
+  };
+}
+
 export function createWebdavHandler({
   dataDir,        // 清单目录（.../public/tree2/data）
   objectsDir,     // 对象库（.../storage/tree2/objects）
   uplogFile,      // uplog.json
   token,          // 读写口令；空则不加鉴权（仅本机）
   collectGarbage, // 可选：删除后回收无引用对象（由主服务注入，做全库引用检查）
+  stageOf = (name) => (/^[ABCDEFGHZ]/i.test(name) ? name.slice(0, 1).toUpperCase() : '省外'),
+  typeOf = () => '考试',
   yearLabel = (y) => `${y}届`,
   log = () => {},
 }) {
@@ -256,9 +270,22 @@ export function createWebdavHandler({
   }
 
   async function handleMkcol(req, res, segs) {
-    if (segs.length < 3) { res.writeHead(405); return res.end('只能在批次内建目录'); }
+    if (segs.length < 2) { res.writeHead(405); return res.end('不能在届别下直接建目录'); }
     const year = safeYear(segs[0]);
     const m = await loadManifest(year);
+    // /webdav/<届>/<批次> 即新建批次（与 Console「新建批次」同语义）
+    if (segs.length === 2) {
+      const name = segs[1];
+      if (badSeg(name)) { res.writeHead(400); return res.end('批次名不合法'); }
+      if ((m.batches || []).some((b) => b.name === name)) { res.writeHead(405); return res.end('同名批次已存在'); }
+      m.batches = [...(m.batches || []), newBatch({ name, stageOf, typeOf })];
+      m.batches.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }));
+      await saveManifest(year, m);
+      await appendUplog({ type: 'batch', season: year, name, at: new Date().toISOString() });
+      log(`[webdav] MKCOL 批次 ${segs.join('/')}`);
+      res.writeHead(201);
+      return res.end();
+    }
     const batch = (m.batches || []).find((b) => b.name === segs[1]);
     if (!batch) { res.writeHead(409); return res.end('批次不存在'); }
     let node = batch.tree;
@@ -278,11 +305,23 @@ export function createWebdavHandler({
   }
 
   async function handleDelete(req, res, segs) {
-    if (segs.length < 3) { res.writeHead(403); return res.end('不能删除届或批次，请用 console'); }
+    if (segs.length < 2) { res.writeHead(403); return res.end('不能删除届别'); }
     const year = safeYear(segs[0]);
     const m = await loadManifest(year);
     const batch = (m.batches || []).find((b) => b.name === segs[1]);
     if (!batch) { res.writeHead(404); return res.end(); }
+    // 直接删批次目录（资源管理器里删除批次文件夹）
+    if (segs.length === 2) {
+      const candidates = new Set();
+      collectKeys(batch.tree, candidates);
+      m.batches = (m.batches || []).filter((b) => b !== batch);
+      await saveManifest(year, m);
+      await appendUplog({ type: 'remove', season: year, kind: 'batch', path: segs.join('/'), name: batch.name, at: new Date().toISOString() });
+      const deleted = await recycle(candidates, batch.name);
+      log(`[webdav] DELETE 批次 ${segs.join('/')}${deleted.length ? `（回收 ${deleted.length} 个对象）` : ''}`);
+      res.writeHead(204);
+      return res.end();
+    }
     let parent = batch.tree;
     for (const s of segs.slice(2, -1)) {
       parent = (parent.c || []).find((c) => c.t === 'd' && c.n === s);
@@ -298,21 +337,28 @@ export function createWebdavHandler({
     await saveManifest(year, m);
     await appendUplog({ type: 'remove', season: year, path: segs.join('/'), name, at: new Date().toISOString() });
     // 无引用则回收对象本体（与 console 删除同语义）
-    let deleted = [];
-    if (collectGarbage && candidates.size) {
-      try {
-        deleted = await collectGarbage(candidates);
-      } catch (e) {
-        log(`[webdav] GC 失败：${e.message}`);
-      }
-    } else if (!collectGarbage) {
-      log('[webdav] 未注入 collectGarbage，跳过对象回收');
-    } else {
-      log(`[webdav] 删除条目无 key（${name}），无需回收`);
-    }
+    const deleted = await recycle(candidates, name);
     log(`[webdav] DELETE ${segs.join('/')}${deleted.length ? `（回收 ${deleted.length} 个对象）` : ''}`);
     res.writeHead(204);
     res.end();
+  }
+
+  /** 删除后回收无引用对象；未注入 collectGarbage 时只记日志。 */
+  async function recycle(candidates, name) {
+    if (!collectGarbage) {
+      log('[webdav] 未注入 collectGarbage，跳过对象回收');
+      return [];
+    }
+    if (!candidates.size) {
+      log(`[webdav] 删除条目无 key（${name}），无需回收`);
+      return [];
+    }
+    try {
+      return await collectGarbage(candidates);
+    } catch (e) {
+      log(`[webdav] GC 失败：${e.message}`);
+      return [];
+    }
   }
 
   async function handleMove(req, res, segs) {
@@ -325,11 +371,33 @@ export function createWebdavHandler({
     const prefix = '/webdav/';
     if (!destPath.startsWith(prefix)) { res.writeHead(400); return res.end('只能移到 /webdav/ 下'); }
     const toSegs = destPath.slice(prefix.length).split('/').filter(Boolean);
-    if (toSegs.length < 3) { res.writeHead(409); return res.end('目标必须在批次内'); }
     const year = safeYear(segs[0]);
-    if (safeYear(toSegs[0]) !== year) { res.writeHead(409); return res.end('暂不支持跨届移动'); }
+    if (toSegs.length && safeYear(toSegs[0]) !== year) { res.writeHead(409); return res.end('暂不支持跨届移动'); }
     const m = await loadManifest(year);
 
+    // 批次级 MOVE：/webdav/<届>/<批次> → /webdav/<届>/<新名> 即重命名整个批次
+    if (segs.length === 2) {
+      const batch = (m.batches || []).find((b) => b.name === segs[1]);
+      if (!batch) { res.writeHead(404); return res.end('批次不存在'); }
+      if (toSegs.length !== 2) { res.writeHead(409); return res.end('批次只能在本届内改名'); }
+      const newName = toSegs[1];
+      if (badSeg(newName)) { res.writeHead(400); return res.end('批次名不合法'); }
+      if ((m.batches || []).some((b) => b.name === newName && b !== batch)) { res.writeHead(405); return res.end('已有同名批次'); }
+      const oldName = batch.name;
+      batch.name = newName;
+      if (batch.tree && batch.tree.n === oldName) batch.tree.n = newName;
+      // 阶段/类型/日期都由名字推导，改名后必须重算，否则站点按 stage 分组会挂在旧阶段下
+      batch.stage = stageOf(newName);
+      batch.type = typeOf(newName);
+      batch.date = (/(\d{4}[.\-年]\d{1,2})/.exec(newName) || [, ''])[1];
+      await saveManifest(year, m);
+      await appendUplog({ type: 'rename', season: year, kind: 'batch', path: oldName, name: '', newName, at: new Date().toISOString() });
+      log(`[webdav] MOVE 批次 ${oldName} → ${newName}`);
+      res.writeHead(201);
+      return res.end();
+    }
+
+    if (toSegs.length < 3) { res.writeHead(409); return res.end('目标必须在批次内'); }
     const locate = (s) => {
       const b = (m.batches || []).find((x) => x.name === s[1]);
       if (!b) return null;

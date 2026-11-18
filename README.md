@@ -47,7 +47,32 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 
 鉴权复用主服务的 `TREE2_TOKEN`：`Basic` 时用户名任意、密码填 token；也接受 `Bearer`。`OPTIONS` 排在鉴权之前放行，否则 Windows「添加网络位置」拿不到 `DAV: 1,2` 会判定文件夹无效。
 
-写操作必须落在批次内（`/webdav/<届>/<批次>/…`）；届与批次本身不能通过 WebDAV 删除或移动，请用 Console。nginx 侧把 `/webdav` 反向代理到 `127.0.0.1:8787`，并关闭 `proxy_buffering` / `proxy_request_buffering`，否则大文件上传会整份堆内存。
+写操作落在 `/webdav/<届>/<批次>/…`；批次级操作也走 WebDAV，Console 不再需要：
+
+- `MKCOL /webdav/<届>/<批次>` 新建批次
+- `MOVE /webdav/<届>/<批次>` → `/webdav/<届>/<新名>` 重命名批次（重算 stage/type/date）
+- `DELETE /webdav/<届>/<批次>` 下架整个批次（清单移除 + 引用检查后回收对象）
+- 批次内文件与目录的增删改移动同前
+
+届别本身不能通过 WebDAV 删除或移动。nginx 侧把 `/webdav` 反向代理到 `127.0.0.1:8787`，并关闭 `proxy_buffering` / `proxy_request_buffering`，否则大文件上传会整份堆内存。
+
+## 短链分享
+
+`scripts/tree2-shortlinks.mjs` 把长存储键链接换成「短码 + 四位提取码」：
+
+```text
+原链接  /s/a5/a536514b…9d8.pdf
+新链接  /s/7xk2   +  提取码 8341
+```
+
+- `POST /api/tree2/shortlink`（要口令）生成或复用短链，返回 `{code, pin, url, expiresAt, reused}`
+- `GET /s/<短码>` 不带 `pin` 给提取码落地页；带对的 `pin` 才出分享页
+- 短码是 32 字母表随机（去掉了 0/O/1/l/I），约 10^14 量级，主要挡掩码的是短码本身，四位提取码是第二道确认
+- **限流**：同一「短码 + 客户端」10 分钟内错 5 次就锁 10 分钟，回 429 带 `Retry-After`，防止四位数被枚举
+- 默认 30 天有效；同一存储键复用未过期的短码，不会每点一次就发一条新链接
+- `GET /api/tree2/shortlink` 列出（不含 pin 原文）、`DELETE /api/tree2/shortlink/<短码>` 吊销
+
+注册表在 `TREE2_SHARES_DIR/shortlinks.json`，与历史随机短链的 `shares.json` 分开。
 
 ## 目录整理与离线重扫
 

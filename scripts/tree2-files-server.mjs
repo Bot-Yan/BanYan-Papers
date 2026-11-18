@@ -46,6 +46,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ArrangeError, planArrangement } from './tree2-arrange.mjs';
 import { createWebdavHandler } from './tree2-webdav.mjs';
+import { createShortLinkStore, shareLockPage } from './tree2-shortlinks.mjs';
 import {
   createIngestPush,
   readUpdateCredentials,
@@ -174,6 +175,9 @@ const ND_SHARE_FILE = path.join(HERE, '..', 'data', 'share-map.json');
 // 分享注册表：shares.json 由本服务写；share-nd-map.json 由 navidrome 同步脚本写（两边不写同一个文件）
 const SHARES_DIR = process.env.TREE2_SHARES_DIR || path.join(HERE, '..', 'data');
 const SHARES_FILE = path.join(SHARES_DIR, 'shares.json');
+// 短链分享：/s/<短码>?pin=<四位码>，注册表独立于历史随机短链
+const SHORTLINKS_FILE = path.join(SHARES_DIR, 'shortlinks.json');
+const shortLinks = createShortLinkStore({ sharesFile: SHORTLINKS_FILE, log: (m) => console.log(m) });
 const SHARE_ND_FILE = path.join(SHARES_DIR, 'share-nd-map.json');
 let ndCache = { cfgMtime: 0, mapMtime: 0, sharesMtime: 0, regMtime: 0, shareNdMtime: 0, cfg: null, map: null, shares: null, reg: null, shareNd: null };
 
@@ -987,6 +991,40 @@ function redirectVinyl(req, res, year, key, sourceFolder) {
   res.end();
 }
 
+// 短链分享：/s/<4 位短码>?pin=<4 位提取码>
+// 没带 pin 或 pin 不对都回落地页（200），不泄露文件是否存在之外的更多信息；
+// 连续输错按「短码 + 客户端」限流，避免四位数被枚举。
+route('GET', /^\/s\/([0-9a-z]{4})$/, async (req, res, [, code], url) => {
+  const pin = url.searchParams.get('pin') || '';
+  const html = (status, body, extra = {}) => {
+    res.writeHead(status, { ...cors(req), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extra });
+    return res.end(body);
+  };
+  if (!pin) return html(200, shareLockPage({ code, title: '受保护的分享', message: '请输入分享者给你的四位提取码。' }));
+  const check = await shortLinks.verify(code, pin, req);
+  if (!check.ok) {
+    if (check.reason === 'blocked') {
+      return html(429, shareLockPage({ code, title: '尝试次数过多', message: '提取码输错次数太多，请稍后再试。' }), { 'Retry-After': String(Math.ceil((check.retryAfter || 0) / 1000)) });
+    }
+    if (check.reason === 'expired') return html(410, shareLockPage({ code, title: '分享已过期', message: '这个分享码已超过有效期。' }));
+    if (check.reason === 'notfound') return html(404, shareLockPage({ code, title: '分享不存在', message: '分享码无效或已被撤销。' }));
+    return html(200, shareLockPage({ code, title: '提取码不正确', message: check.remaining > 0 ? `还可以再试 ${check.remaining} 次。` : '再输错一次将临时锁定。' }));
+  }
+  const key = check.entry.key;
+  const st = await fsp.stat(objPath(key)).catch(() => null);
+  if (!st || !st.isFile()) return html(410, shareLockPage({ code, title: '文件已下架', message: '这个文件已不在资料库里。' }));
+  bumpStat(key, 'pv');
+  const ext = path.extname(key).toLowerCase();
+  return sendShareLanding(req, res, {
+    key,
+    name: check.entry.name || path.basename(key),
+    ext,
+    size: st.size,
+    season: check.entry.season || (await latestManifestYear()) || '2026',
+    dateLabel: st.mtime.toISOString().slice(0, 10),
+  });
+});
+
 // 确定性分享链接：/s/<存储键>
 route('GET', /^\/s\/([0-9a-f]{2}\/[0-9a-f]{64}(?:\.[a-z0-9]{1,8})?)$/, async (req, res, [, key], url) => {
   const st = await fsp.stat(objPath(key)).catch(() => null);
@@ -1597,6 +1635,40 @@ route('POST', /^\/api\/tree2\/rename$/, async (req, res) => {
     await appendUplog({ type: 'rename', season: year, kind: renamed, path: folder, name: name || '', newName, actor: actorOf(req), at: new Date().toISOString() });
     json(res, 200, { ok: true, kind: renamed, newName });
   });
+});
+
+// ---------------- 短链分享（管理，要口令） ----------------
+// 给存储键生成「短码 + 四位提取码」，Console 只显示短链
+route('POST', /^\/api\/tree2\/shortlink$/, async (req, res) => {
+  requireWrite(req);
+  const body = JSON.parse((await readBody(req, 16 * 1024)) || '{}');
+  const year = safeYear(body.year);
+  const key = safeKey(body.key);
+  const st = await fsp.stat(objPath(key)).catch(() => null);
+  if (!st || !st.isFile()) throw new HttpError(404, '这个文件不在对象库里');
+  const meta = (await keyMetaMap()).get(key);
+  const result = await shortLinks.create({
+    key,
+    name: body.name || (meta && meta.name) || path.basename(key),
+    season: year,
+    ext: path.extname(key),
+    size: st.size,
+  });
+  const base = `${(req.headers['x-forwarded-proto'] || 'https').split(',')[0]}://${req.headers['x-forwarded-host'] || req.headers.host || 'files.example.com'}`;
+  json(res, 200, { ...result, url: `${base}/s/${result.code}` });
+});
+
+// 列出 / 吊销短链（运维）
+route('GET', /^\/api\/tree2\/shortlink$/, async (req, res) => {
+  requireWrite(req);
+  json(res, 200, { items: (await shortLinks.list()).map(({ pin, ...rest }) => rest), total: (await shortLinks.load()).length });
+});
+
+route('DELETE', /^\/api\/tree2\/shortlink\/([0-9a-z]{4})$/, async (req, res, [, code]) => {
+  requireWrite(req);
+  const removed = await shortLinks.revoke(code);
+  if (!removed) throw new HttpError(404, '分享码不存在');
+  json(res, 200, { ok: true });
 });
 
 // ---------------- 批次内目录整理 ----------------
@@ -2271,6 +2343,8 @@ const webdav = createWebdavHandler({
   uplogFile: UPLOG_FILE,
   token: cfg.token,
   collectGarbage,   // 删除后回收无引用对象（全库引用检查）
+  stageOf: t2StageOf,
+  typeOf: t2TypeOf,
   log: (m) => console.log(m),
 });
 

@@ -461,10 +461,75 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.equal((await dav('DELETE', `/webdav/${year}/${batch}/新目录/a.txt`)).status, 204);
     await assert.rejects(stat(join(store, 'objects', node.k)), { code: 'ENOENT' });
     assert.equal((await readManifest(year)).batches[0].tree.c.find(r => r.n === '新目录').c.length, 0);
-    // 批次目录不能直接删（只能用 console）
-    assert.equal((await dav('DELETE', `/webdav/${year}/${batch}`)).status, 403);
+    // 批次级操作：新建 → 改名 → 删除，都不再需要 Console
+    const created = await dav('MKCOL', `/webdav/${year}/B9 新批次`);
+    assert.equal(created.status, 201);
+    assert.equal((await dav('MKCOL', `/webdav/${year}/B9 新批次`)).status, 405);
+    const newBatchRec = (await readManifest(year)).batches.find(b => b.name === 'B9 新批次');
+    assert.equal(newBatchRec.stage, 'B');
+    const renamed = await dav('MOVE', `/webdav/${year}/${encodeURIComponent('B9 新批次')}`, {
+      headers: { Destination: `${origin}/webdav/${year}/${encodeURIComponent('C9 改名批次')}` },
+    });
+    assert.equal(renamed.status, 201, `rename => ${renamed.status} ${await renamed.text()}`);
+    const afterRename = (await readManifest(year)).batches.find(b => b.name === 'C9 改名批次');
+    assert.equal(afterRename.stage, 'C');
+    assert.equal(afterRename.tree.n, 'C9 改名批次');
+    assert.equal((await dav('DELETE', `/webdav/${year}/${encodeURIComponent('C9 改名批次')}`)).status, 204);
+    assert.equal((await readManifest(year)).batches.some(b => b.name === 'C9 改名批次'), false);
     // 写入口必须落在批次内
     assert.equal((await dav('PUT', `/webdav/${year}/loose.txt`, { body: 'x' })).status, 409);
+  });
+
+  await t.test('short link requires the pin and throttles guessing', async () => {
+    const year = '2034';
+    const entry = { t: 'f', n: 'short.pdf', k: file.key, s: file.bytes.length };
+    await writeFile(join(data, year + '.json'), JSON.stringify({ batches: [
+      { name: '短链批次', tree: { n: '短链批次', t: 'd', c: [entry] } },
+    ] }));
+    // 对象要真实存在，创建短链时会 stat
+    await mkdir(join(store, 'objects', file.key.split('/')[0]), { recursive: true });
+    await writeFile(join(store, 'objects', ...file.key.split('/')), file.bytes);
+    const created = await api('shortlink', { method: 'POST', body: { year, key: file.key, name: 'short.pdf' } });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const { code, pin, url } = created.body;
+    assert.match(code, /^[0-9a-z]{4}$/);
+    assert.match(pin, /^[0-9a-z]{4}$/);
+    assert.match(url, /\/s\/[0-9a-z]{4}$/);
+    // 同一文件再次创建复用短码，不会每次点都发新的
+    const again = await api('shortlink', { method: 'POST', body: { year, key: file.key, name: 'short.pdf' } });
+    assert.equal(again.body.code, code);
+    assert.equal(again.body.reused, true);
+    const open = pathname => fetch(origin + pathname, { signal: AbortSignal.timeout(5000) });
+    // 不带 pin：给落地页，不泄露文件
+    const locked = await open(`/s/${code}`);
+    assert.equal(locked.status, 200);
+    assert.match(await locked.text(), /提取码/);
+    // 正确 pin：给出真实分享页
+    const opened = await open(`/s/${code}?pin=${pin}`);
+    assert.equal(opened.status, 200);
+    assert.match(await opened.text(), /short\.pdf/);
+    // 错误 pin 只给提示，不给文件
+    const wrong = await open(`/s/${code}?pin=zzzz`);
+    assert.equal(wrong.status, 200);
+    assert.doesNotMatch(await wrong.text(), /short\.pdf/);
+    // 连续输错触发限流
+    let throttled = null;
+    for (let i = 0; i < 6; i++) {
+      const attempt = await open(`/s/${code}?pin=zzzz`);
+      if (attempt.status === 429) { throttled = attempt; break; }
+    }
+    assert.ok(throttled, '连续输错应触发限流');
+    assert.ok(Number(throttled.headers.get('retry-after')) > 0);
+    // 不存在的短码：不带 pin 只给落地页（不泄露存在性），带 pin 才回 404
+    assert.equal((await open('/s/zzzz')).status, 200);
+    assert.equal((await open('/s/zzzz?pin=1234')).status, 404);
+    // 吊销后失效（换一个客户端来源，避开上面的锁定）
+    const list = await api('shortlink');
+    assert.equal(list.status, 200);
+    assert.ok(list.body.items.some(row => row.code === code));
+    assert.equal((await api(`shortlink/${code}`, { method: 'DELETE' })).status, 200);
+    const gone = await fetch(origin + `/s/${code}?pin=${pin}`, { signal: AbortSignal.timeout(5000) });
+    assert.ok([404, 403, 429].includes(gone.status), `吊销后 => ${gone.status}`);
   });
 
   await t.test('whole batch can be merged into another batch', async () => {
