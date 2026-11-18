@@ -1620,6 +1620,8 @@ route('POST', /^\/api\/tree2\/arrange$/, async (req, res) => {
         plan.apply();
         assignFolderIds(manifest);
         rememberFolderChanges(manifest, before);
+        // 跨批次移动后批次统计整体重算，页面数字与实际内容对得上
+        if (plan.summary.crossBatch) recalcManifestStats(manifest);
       }
     } catch (error) {
       if (error instanceof ArrangeError) throw new HttpError(error.status, error.message);

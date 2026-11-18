@@ -13,3 +13,5 @@ public/tree2/data/
 # 历史手工备份与临时文件，留在服务器上由人手动清理
 *.bak-*
 js_tmp_check/
+# 测试进仓库供 CI 门禁（deploy.yml 的 node --test），但不部署到服务器
+test/
