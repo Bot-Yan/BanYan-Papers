@@ -32,6 +32,23 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 `deletedObjects`。仍被引用的对象保留（内容寻址去重，可能被别的
 条目/分享使用）。
 
+## WebDAV
+
+`scripts/tree2-webdav.mjs` 把「哈希对象库 + 清单 JSON」实时翻译成中文名目录树，挂载在 `/webdav`：
+
+```text
+/webdav/                       → 届别列表（2027届 / 2026届 …）
+/webdav/2027/                  → 该届所有批次
+/webdav/2027/<批次>/            → 批次内目录与文件
+/webdav/2027/<批次>/<子目录>/…   → 递归
+```
+
+支持 `PROPFIND`（列出）、`GET`/`HEAD`（含 Range）、`PUT`（写对象库 + 改清单 + 记 uplog）、`MKCOL`、`MOVE`、`DELETE`（摘出清单后按引用回收对象）、`LOCK`/`UNLOCK`（返回合法 token，不真正互斥）、`PROPPATCH`（回成功不存属性）。
+
+鉴权复用主服务的 `TREE2_TOKEN`：`Basic` 时用户名任意、密码填 token；也接受 `Bearer`。`OPTIONS` 排在鉴权之前放行，否则 Windows「添加网络位置」拿不到 `DAV: 1,2` 会判定文件夹无效。
+
+写操作必须落在批次内（`/webdav/<届>/<批次>/…`）；届与批次本身不能通过 WebDAV 删除或移动，请用 Console。nginx 侧把 `/webdav` 反向代理到 `127.0.0.1:8787`，并关闭 `proxy_buffering` / `proxy_request_buffering`，否则大文件上传会整份堆内存。
+
 ## 目录整理与离线重扫
 
 `POST /api/tree2/arrange` 使用同一组参数预览及执行。请求带 `year`、`action`、`source` 路径数组，以及操作所需的 `name` 或 `kind`、`destination`。预览返回 `revision`、移动文件数和冲突摘要。执行时带回 `revision`，服务会在写入前重新校验。

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -401,6 +401,70 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     // 不存在的目标批次拒绝，不会无中生有
     const missing = await api('arrange', { method: 'POST', body: { year, action: 'move', kind: 'f', source: ['源批次', '留下', 'F.txt'], destination: ['不存在批次'] } });
     assert.equal(missing.status, 404);
+  });
+
+  await t.test('webdav gateway browses, uploads and recycles objects', async () => {
+    const year = '2033';
+    const dav = (method, pathname, { body, headers = {}, token = adminToken, auth } = {}) => fetch(origin + pathname, {
+      method,
+      headers: {
+        ...(auth === null ? {} : {
+          Authorization: 'Basic ' + Buffer.from(`${auth || 'anyuser'}:${token}`).toString('base64'),
+        }),
+        ...headers,
+      },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+    await writeFile(join(data, year + '.json'), JSON.stringify({ batches: [
+      { name: 'DAV 批次', tree: { n: 'DAV 批次', t: 'd', c: [] } },
+    ] }));
+    const batch = encodeURIComponent('DAV 批次');
+    // 匿名 OPTIONS 必须放行并声明 DAV 能力（Windows 映射网络驱动器靠它探测）
+    const options = await dav('OPTIONS', '/webdav/', { auth: null });
+    assert.equal(options.status, 200);
+    assert.equal(options.headers.get('dav'), '1,2');
+    assert.match(options.headers.get('allow'), /PROPFIND/);
+    // 无口令 / 错口令一律 401
+    assert.equal((await dav('PROPFIND', '/webdav/', { auth: null })).status, 401);
+    assert.equal((await dav('PROPFIND', '/webdav/', { token: 'wrong' })).status, 401);
+    // PROPFIND 列出届别与批次
+    const root = await dav('PROPFIND', '/webdav/', { headers: { Depth: '1' } });
+    assert.equal(root.status, 207);
+    const rootXml = await root.text();
+    assert.match(rootXml, /资料库/);
+    assert.match(rootXml, new RegExp(`${year}届`));
+    // 目录列表
+    const list = await dav('PROPFIND', `/webdav/${year}/`, { headers: { Depth: '1' } });
+    assert.equal(list.status, 207);
+    assert.match(await list.text(), /DAV 批次/);
+    // MKCOL → PUT → GET
+    assert.equal((await dav('MKCOL', `/webdav/${year}/${batch}/新目录`)).status, 201);
+    assert.equal((await dav('MKCOL', `/webdav/${year}/${batch}/新目录`)).status, 405);
+    const put = await dav('PUT', `/webdav/${year}/${batch}/新目录/a.txt`, { body: 'webdav payload' });
+    assert.equal(put.status, 201);
+    const got = await dav('GET', `/webdav/${year}/${batch}/新目录/a.txt`);
+    assert.equal(got.status, 200);
+    assert.equal(await got.text(), 'webdav payload');
+    // Range 请求
+    const ranged = await dav('GET', `/webdav/${year}/${batch}/新目录/a.txt`, { headers: { Range: 'bytes=0-5' } });
+    assert.equal(ranged.status, 206);
+    assert.equal(await ranged.text(), 'webdav');
+    // 同名覆盖返回 204
+    assert.equal((await dav('PUT', `/webdav/${year}/${batch}/新目录/a.txt`, { body: 'webdav payload 2' })).status, 204);
+    const manifest = await readManifest(year);
+    const node = manifest.batches[0].tree.c.find(r => r.n === '新目录').c.find(r => r.n === 'a.txt');
+    assert.equal(node.s, 'webdav payload 2'.length);
+    // 对象确实落到对象库
+    assert.equal((await stat(join(store, 'objects', node.k))).size, node.s);
+    // DELETE 后对象被回收
+    assert.equal((await dav('DELETE', `/webdav/${year}/${batch}/新目录/a.txt`)).status, 204);
+    await assert.rejects(stat(join(store, 'objects', node.k)), { code: 'ENOENT' });
+    assert.equal((await readManifest(year)).batches[0].tree.c.find(r => r.n === '新目录').c.length, 0);
+    // 批次目录不能直接删（只能用 console）
+    assert.equal((await dav('DELETE', `/webdav/${year}/${batch}`)).status, 403);
+    // 写入口必须落在批次内
+    assert.equal((await dav('PUT', `/webdav/${year}/loose.txt`, { body: 'x' })).status, 409);
   });
 
   await t.test('whole batch can be merged into another batch', async () => {

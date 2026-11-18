@@ -45,6 +45,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ArrangeError, planArrangement } from './tree2-arrange.mjs';
+import { createWebdavHandler } from './tree2-webdav.mjs';
 import {
   createIngestPush,
   readUpdateCredentials,
@@ -1382,6 +1383,44 @@ route('GET', /^\/api\/tree2\/stats$/, async (req, res) => {
   json(res, 200, { rows: rows.slice(0, 50) });
 });
 
+// ---------------- 对象回收（remove 与 WebDAV DELETE 共用） ----------------
+// 引用面：所有届的清单（^\d{4}\.json$，调用方已先写盘，当前届不含被移除的条目，
+// 其余届可能有同内容去重条目）+ audio-map / share-map / shares（键为裸 sha256）。
+// 用原文包含做保守判断：宁可少删，不可误删还在用的对象。
+// uplog 只是历史日志，不算引用；preview-cache 不归本服务管，不动。
+async function collectGarbage(keys) {
+  const deleted = [];
+  const list = Array.isArray(keys) ? keys : [...(keys || [])];
+  if (!list.length) return deleted;
+  const refChunks = [];
+  try {
+    for (const f of (await fsp.readdir(cfg.data)).filter((f) => /^\d{4}\.json$/.test(f))) {
+      refChunks.push(await fsp.readFile(path.join(cfg.data, f), 'utf8'));
+    }
+    for (const f of [ND_MAP_FILE, ND_SHARE_FILE, SHARES_FILE]) {
+      refChunks.push(await fsp.readFile(f, 'utf8').catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return '';
+      }));
+    }
+    const refs = refChunks.join('\n');
+    for (const k of list) {
+      const sha = path.basename(k, path.extname(k));
+      if (!sha || refs.includes(sha)) continue;
+      try {
+        await fsp.unlink(objPath(k));
+        deleted.push(k);
+        invalidateObjectKeys();
+      } catch (error) {
+        if (error.code !== 'ENOENT') console.error('[tree2] 对象回收失败', error);
+      }
+    }
+  } catch (error) {
+    console.error('[tree2] 引用检查失败，保留对象', error);
+  }
+  return deleted;
+}
+
 // ---------------- 删除/下架（管理，要口令） ----------------
 // 从清单移除批次/子目录/单个文件；对象本体保留在 objects/（内容寻址，可能被别的键引用）
 route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
@@ -1449,39 +1488,7 @@ route('POST', /^\/api\/tree2\/remove$/, async (req, res) => {
     await writeJsonAtomic(file, manifest);
     manifestCache.delete(year);
     // —— 垃圾回收：被移除的存储键若已无引用，连对象本体一起删 ——
-    // 引用面：所有届的清单（^\d{4}\.json$，刚写盘的当前届已不含本次移除的条目，
-    // 其余届可能有同内容去重条目）+ audio-map / share-map / shares（键为裸 sha256）。
-    // 用原文包含做保守判断：宁可少删，不可误删还在用的对象。
-    // uplog 只是历史日志，不算引用；preview-cache 不归本服务管，不动。
-    const deletedObjects = [];
-    if (removedKeys.length) {
-      const refChunks = [];
-      try {
-        for (const f of (await fsp.readdir(cfg.data)).filter((f) => /^\d{4}\.json$/.test(f))) {
-          refChunks.push(await fsp.readFile(path.join(cfg.data, f), 'utf8'));
-        }
-        for (const f of [ND_MAP_FILE, ND_SHARE_FILE, SHARES_FILE]) {
-          refChunks.push(await fsp.readFile(f, 'utf8').catch(error => {
-            if (error.code !== 'ENOENT') throw error;
-            return '';
-          }));
-        }
-        const refs = refChunks.join('\n');
-        for (const k of removedKeys) {
-          const sha = path.basename(k, path.extname(k));
-          if (!sha || refs.includes(sha)) continue;
-          try {
-            await fsp.unlink(objPath(k));
-            deletedObjects.push(k);
-            invalidateObjectKeys();
-          } catch (error) {
-            if (error.code !== 'ENOENT') console.error('[tree2] 对象回收失败', error);
-          }
-        }
-      } catch (error) {
-        console.error('[tree2] 引用检查失败，保留对象', error);
-      }
-    }
+    const deletedObjects = removedKeys.length ? await collectGarbage(removedKeys) : [];
     // 删除事件也要写进 uplog，和改名对称：清单是从本地目录全量重扫派生的，
     // 只改服务器清单不动本地文件的话，下一次发布会把删掉的东西原样加回来。
     // tree2-publish 开头读到这条就把本地对应文件移进下架回收区，重扫自然没有它。
@@ -2257,6 +2264,16 @@ async function serveStatic(req, res, pathname) {
 
 // ---------------------------------------------------------------- 主循环
 
+// WebDAV 网关实例（口令与主服务同一个 TREE2_TOKEN：用户名任意、密码填 token 即可）
+const webdav = createWebdavHandler({
+  dataDir: cfg.data,
+  objectsDir: OBJECTS,
+  uplogFile: UPLOG_FILE,
+  token: cfg.token,
+  collectGarbage,   // 删除后回收无引用对象（全库引用检查）
+  log: (m) => console.log(m),
+});
+
 const playerDirectory = cfg.host === '127.0.0.1' && process.env.TREE2_LOCAL_PLAYER_DIR;
 const { createLocalPlayer, localPlayerId } = playerDirectory ? await import('./preview-local-player.mjs') : {};
 const serveLocalPlayer = await createLocalPlayer?.(playerDirectory, async key => (await keyMetaMap()).get(key));
@@ -2265,6 +2282,12 @@ async function tree2Handler(req, res) {
   // json() 需要读 Origin 才能回正确的 CORS 头
   res.req = req;
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  // WebDAV 网关：把哈希对象库翻译成中文名目录树（读写双向），见 tree2-webdav.mjs。
+  // 必须排在通用 OPTIONS 拦截之前——WebDAV 客户端靠 OPTIONS 的 DAV 头探测能力，
+  // 拿不到 DAV: 1,2 会判定文件夹无效、不再尝试。
+  if (req.url === '/webdav' || req.url.startsWith('/webdav/')) {
+    return webdav(req, res);
+  }
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors(req));
     return res.end();
