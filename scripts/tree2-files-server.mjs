@@ -2342,6 +2342,9 @@ const webdav = createWebdavHandler({
   objectsDir: OBJECTS,
   uplogFile: UPLOG_FILE,
   token: cfg.token,
+  // WebDAV 专用口令（TREE2_WEBDAV_TOKEN）：与主口令并行有效。
+  // 主口令留给 console/backend/bot，WebDAV 客户端用这一套，可单独轮换不影响其它服务。
+  webdavToken: process.env.TREE2_WEBDAV_TOKEN || '',
   collectGarbage,   // 删除后回收无引用对象（全库引用检查）
   stageOf: t2StageOf,
   typeOf: t2TypeOf,

@@ -12,7 +12,9 @@
  *     MKCOL 建目录 / DELETE 下架（移出清单，对象保留，与 console 下架同语义）
  *     MOVE 同批次内移动/改名
  *
- * 鉴权复用主服务的 TREE2_TOKEN（Basic 用户名任意、密码=token，或 Bearer）。
+ * 鉴权：Basic 用户名任意、密码填以下任一口令（也接受 Bearer）：
+ *   - token      主服务 TREE2_TOKEN（console/backend/bot 用的那个）
+ *   - webbavToken WebDAV 专用口令（TREE2_WEBDAV_TOKEN），便于单独轮换
  */
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -38,7 +40,8 @@ export function createWebdavHandler({
   dataDir,        // 清单目录（.../public/tree2/data）
   objectsDir,     // 对象库（.../storage/tree2/objects）
   uplogFile,      // uplog.json
-  token,          // 读写口令；空则不加鉴权（仅本机）
+  token,          // 主服务口令；空则不加鉴权（仅本机）
+  webdavToken,    // WebDAV 专用口令（可与主口令并行有效）
   collectGarbage, // 可选：删除后回收无引用对象（由主服务注入，做全库引用检查）
   stageOf = (name) => (/^[ABCDEFGHZ]/i.test(name) ? name.slice(0, 1).toUpperCase() : '省外'),
   typeOf = () => '考试',
@@ -135,14 +138,19 @@ export function createWebdavHandler({
     return diff === 0;
   };
 
+  // 主口令与 WebDAV 专用口令并行有效：console/backend/bot 继续用主口令，
+  // WebDAV 客户端可以用专用口令，两套互不影响，专用口令可单独轮换。
+  const accepted = [token, webdavToken].filter((value) => typeof value === 'string' && value.length > 0);
+  const matchAny = (value) => accepted.some((expected) => same(value, expected));
+
   function authorized(req) {
-    if (!token) return true;
+    if (!accepted.length) return true;
     const h = req.headers.authorization || '';
-    if (h.startsWith('Bearer ')) return same(h.slice(7), token);
+    if (h.startsWith('Bearer ')) return matchAny(h.slice(7));
     if (h.startsWith('Basic ')) {
       try {
         const [user, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(':');
-        return Boolean(user) && same(pass || '', token); // 用户名任意（Windows 要求非空），密码 = token
+        return Boolean(user) && matchAny(pass || ''); // 用户名任意（Windows 要求非空）
       } catch { return false; }
     }
     return false;
