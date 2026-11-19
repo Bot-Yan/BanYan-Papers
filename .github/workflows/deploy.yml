@@ -15,8 +15,10 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 自托管 runner 就装在生产机上：构建与部署同机完成，不再需要 SSH 密钥同步产物。
+    # 需要在服务器上注册 runner，标签用 treenext（见 README「部署」）。
+    runs-on: [self-hosted, linux, treenext]
+    timeout-minutes: 20
     environment:
       name: production
 
@@ -25,6 +27,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # 自托管 runner 复用同一工作目录，必须清理残留，避免上次的改动混进来
+          clean: true
 
       # 单文件 Node 服务 + 静态站点，没有构建产物；语法检查当作最小编译门
       - name: Setup Node.js
@@ -38,75 +42,48 @@ jobs:
       - name: Test uploads and guest access
         run: node --test test/tree2-upload.test.mjs
 
-      - name: Configure SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
-
-      - name: Configure known hosts
-        env:
-          SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SERVER_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          test -s ~/.ssh/known_hosts
-
       # 运行数据（清单 public/tree2/data/、data/、storage/、preview-cache/、backups/）
-      # 由 .deployignore 保护，rsync --delete 不会碰它们；仓库独有文件在此额外排除
+      # 由 .deployignore 保护，rsync --delete 不会碰它们；仓库独有文件在此额外排除。
+      # runner 以 runner 用户运行，/srv/treenext 归 root：用受限 sudo 同步
+      # （sudoers 只放行 rsync/mkdir/mktemp/mv/chown/systemctl tree2）。
       - name: Deploy to /srv/treenext
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
-          rsync -rz --delete --delete-delay \
-            --no-perms --no-owner --no-group --no-times --omit-dir-times \
+          set -euo pipefail
+          target="${DEPLOY_PATH:-/srv/treenext}"
+          test "$target" = /srv/treenext
+          sudo mkdir -p "$target"
+          sudo rsync -rz --delete --delete-delay \
+            --no-owner --no-group --no-times --omit-dir-times \
             --exclude-from=.deployignore \
             --exclude='.git' --exclude='.github' \
             --exclude='.deployignore' --exclude='.gitignore' --exclude='.gitattributes' \
             --exclude='README.md' \
             --exclude='/test/' \
-            -e "ssh -p ${SERVER_PORT}" \
-            ./ \
-            "${SERVER_USER}@${SERVER_HOST}:${DEPLOY_PATH}/"
+            ./ "$target/"
 
       - name: Configure library update notifications
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           TREE2_UPDATE_TOKEN: ${{ secrets.TREE2_UPDATE_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "$TREE2_UPDATE_TOKEN" ]]; then exit 0; fi
-          test "$DEPLOY_PATH" = /srv/treenext
           [[ "$TREE2_UPDATE_TOKEN" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
-          { printf '%s\n' "$TREE2_UPDATE_TOKEN"; cat <<'REMOTE'
-          set -euo pipefail
-          [[ "$token" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
           service_user="$(systemctl show tree2 --property=User --value)"
-          umask 077
           dir=/srv/treenext/data
-          file="$(mktemp "$dir/.update-push.XXXXXXXX")"
-          trap 'rm -f -- "$file"' EXIT
-          printf '{"origin":"https://console.example.com","token":"%s"}\n' "$token" > "$file"
+          payload="$(printf '{"origin":"https://console.example.com","token":"%s"}\n' "$TREE2_UPDATE_TOKEN")"
+          # 借 sudo 写临时文件再原子改名：runner 用户对 data/ 没有直接写权限
+          printf '%s\n' "$payload" | sudo tee "$dir/.update-push.tmp" >/dev/null
+          sudo chmod 600 "$dir/.update-push.tmp"
           if [[ -n "$service_user" && "$service_user" != root && "$service_user" != "$(id -un)" ]]; then
-            setfacl -m "u:$service_user:r" "$file"
+            sudo chown "$service_user" "$dir/.update-push.tmp" || true
           fi
-          mv -f -- "$file" "$dir/update-push.json"
-          REMOTE
-          } | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
-            'IFS= read -r token && export token && bash -s'
+          sudo mv -f -- "$dir/.update-push.tmp" "$dir/update-push.json"
 
-      # SERVER_USER 需要有重启权限：root 直接可用；专用部署用户配 sudoers NOPASSWD
+      # runner 在服务器上用受限 sudo 重启，不再需要 SERVER_USER 的 SSH 权限
       - name: Restart service and verify
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh -o BatchMode=yes -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
-            "systemctl restart tree2 && sleep 1 && systemctl is-active tree2"
+          sudo systemctl restart tree2
+          sleep 1
+          sudo systemctl is-active tree2
