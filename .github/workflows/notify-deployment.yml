@@ -39,7 +39,7 @@ jobs:
 
           const { workflow_run: run } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
           const repository = process.env.GITHUB_REPOSITORY;
-          const project = /^your-org/(landing-page|console|backend|bot|wiki|treenext)$/i.exec(repository)?.[1]?.toLowerCase();
+          const project = /^your-org\/(?:landing-page|console|backend|bot|wiki|treenext)$/i.exec(repository)?.[1]?.toLowerCase();
           const origin = new URL(process.env.CI_DEPLOY_API_ORIGIN);
           if (!project || origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
             throw new Error('CI subscription requires a known repository and a valid HTTPS API origin.');
