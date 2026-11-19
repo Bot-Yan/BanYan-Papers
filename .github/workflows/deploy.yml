@@ -21,41 +21,39 @@ jobs:
     timeout-minutes: 20
     environment:
       name: production
+    # 复用服务器上预置的 clone 作为工作目录：中国大陆直连 GitHub 拉整仓只有几十 B/s，
+    # actions/checkout 会卡死超时。预置目录由 git bundle 初始化，这里只 fetch 增量。
+    defaults:
+      run:
+        working-directory: /srv/treenext-src
 
     steps:
-      # 不走 actions/checkout：生产机在中国大陆，直连 GitHub 拉整个仓库只有几十 B/s，
-      # checkout 会卡死。服务器上预置了一份 clone（/srv/treenext-src，由 bundle 初始化），
-      # 这里只做增量 fetch —— 每次通常只有几百 KB。
-      - name: Fetch source (local mirror checkout)
+      - name: Fetch source (pre-seeded clone)
         run: |
           set -euo pipefail
-          src=/srv/treenext-src
-          test -d "$src/.git"
-          cd "$src"
+          test -d .git
           git fetch --prune origin '+refs/heads/main:refs/remotes/origin/main'
+          # 固定到本次触发的提交；workflow_dispatch 时 GITHUB_SHA 是默认分支 HEAD
           git reset --hard "$GITHUB_SHA"
           git clean -ffdx
 
-      # 后面所有步骤都在预置仓库目录里跑
+      # 单文件 Node 服务 + 静态站点，没有构建产物；语法检查当作最小编译门
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - name: Syntax check
-        working-directory: /srv/treenext-src
         run: node --check scripts/tree2-files-server.mjs
 
       - name: Test uploads and guest access
-        working-directory: /srv/treenext-src
         run: node --test test/tree2-upload.test.mjs
 
       # 运行数据（清单 public/tree2/data/、data/、storage/、preview-cache/、backups/）
       # 由 .deployignore 保护，rsync --delete 不会碰它们；仓库独有文件在此额外排除。
       # runner 以 runner 用户运行，/srv/treenext 归 root：用受限 sudo 同步
-      # （sudoers 只放行 rsync/mkdir/mktemp/mv/chown/systemctl tree2）。
+      # （sudoers 只放行 rsync/mkdir/tee/chmod/chown/mv/systemctl tree2）。
       - name: Deploy to /srv/treenext
-        working-directory: /srv/treenext-src
         env:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
@@ -81,9 +79,9 @@ jobs:
           [[ "$TREE2_UPDATE_TOKEN" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
           service_user="$(systemctl show tree2 --property=User --value)"
           dir=/srv/treenext/data
-          payload="$(printf '{"origin":"https://console.example.com","token":"%s"}\n' "$TREE2_UPDATE_TOKEN")"
-          # 借 sudo 写临时文件再原子改名：runner 用户对 data/ 没有直接写权限
-          printf '%s\n' "$payload" | sudo tee "$dir/.update-push.tmp" >/dev/null
+          # runner 用户对 data/ 没有直接写权限：借 sudo 写临时文件再原子改名
+          printf '{"origin":"https://console.example.com","token":"%s"}\n' "$TREE2_UPDATE_TOKEN" \
+            | sudo tee "$dir/.update-push.tmp" >/dev/null
           sudo chmod 600 "$dir/.update-push.tmp"
           if [[ -n "$service_user" && "$service_user" != root && "$service_user" != "$(id -un)" ]]; then
             sudo chown "$service_user" "$dir/.update-push.tmp" || true
