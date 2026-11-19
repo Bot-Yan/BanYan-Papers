@@ -185,6 +185,9 @@ export function createIngestPush({ sharesDir, endpoint, token, writeLibrary, rea
           redirect: 'error',
           signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          // backend 的 /api/treenext/updates 只认顶层字段（eventId/at/year/batchId/
+          // batch/name/origin），多带 key/folder 会被判「输入内容无效」。所以这里
+          // 只发 event 本身，不要发整个包装对象。
           body: JSON.stringify(event),
         });
         await response.body?.cancel();
