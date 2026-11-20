@@ -2345,6 +2345,9 @@ const webdav = createWebdavHandler({
   // WebDAV 专用口令（TREE2_WEBDAV_TOKEN）：与主口令并行有效。
   // 主口令留给 console/backend/bot，WebDAV 客户端用这一套，可单独轮换不影响其它服务。
   webdavToken: process.env.TREE2_WEBDAV_TOKEN || '',
+  // 分级账号：customer 只能新建目录与上传，visitor 只读。
+  customerToken: process.env.TREE2_CUSTOMER_TOKEN || '',
+  visitorToken: process.env.TREE2_VISITOR_TOKEN || '',
   collectGarbage,   // 删除后回收无引用对象（全库引用检查）
   ingestPush,       // 与主服务共用推送队列：WebDAV 上传也要通知群里
   stageOf: t2StageOf,

@@ -14,6 +14,9 @@ import { Script, createContext } from 'node:vm';
 const script = fileURLToPath(new URL('../scripts/tree2-files-server.mjs', import.meta.url));
 const preserveFolderIds = fileURLToPath(new URL('../scripts/tree2-preserve-folder-ids.mjs', import.meta.url));
 const adminToken = 'local-test-admin-token';
+// WebDAV 分级账号口令：customer 只能上传，visitor 只读
+const customerToken = 'customer-secret-token-for-test-1234567890';
+const visitorToken = 'visitor-secret-token-for-test-12345678901';
 const batch = name => ({ name, tree: { n: name, t: 'd', c: [] } });
 const fixture = input => {
   const bytes = Buffer.from(input);
@@ -136,7 +139,7 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
   let origin;
   async function start(updateEnv = {}) {
     child = spawn(process.execPath, ['--import', pathToFileURL(faultInjection).href, fixtureScript, '--port', '0', '--data', data, '--store', store, '--token', adminToken,
-      '--allow-origin', 'https://allowed.example'], { env: { ...process.env, TREE2_SHARES_DIR: shares, TREE2_UPDATE_ORIGIN: '', TREE2_UPDATE_TOKEN: '', ...updateEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+      '--allow-origin', 'https://allowed.example'], { env: { ...process.env, TREE2_SHARES_DIR: shares, TREE2_UPDATE_ORIGIN: '', TREE2_UPDATE_TOKEN: '', TREE2_CUSTOMER_TOKEN: customerToken, TREE2_VISITOR_TOKEN: visitorToken, ...updateEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', bytes => { stderr += bytes; });
     const lines = createInterface({ input: child.stdout });
@@ -478,6 +481,56 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.equal((await readManifest(year)).batches.some(b => b.name === 'C9 改名批次'), false);
     // 写入口必须落在批次内
     assert.equal((await dav('PUT', `/webdav/${year}/loose.txt`, { body: 'x' })).status, 409);
+  });
+
+  await t.test('webdav roles: customer can only upload, visitor is read-only', async () => {
+    const year = '2035';
+    const batch = encodeURIComponent('角色批次');
+    const cDir = encodeURIComponent('顾客目录');
+    const vDir = encodeURIComponent('访客目录');
+    const cNew = encodeURIComponent('顾客自建批次');
+    await writeFile(join(data, year + '.json'), JSON.stringify({ batches: [
+      { name: '角色批次', tree: { n: '角色批次', t: 'd', folderId: '11111111-2222-3333-4444-555555555555', c: [] } },
+    ] }));
+    const customerSecret = customerToken;
+    const visitorSecret = visitorToken;
+    const call = (method, pathname, secret, opts = {}) => fetch(origin + pathname, {
+      method,
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`anyuser:${secret}`).toString('base64'),
+        ...opts.headers,
+      },
+      body: opts.body,
+      signal: AbortSignal.timeout(5000),
+    });
+    // 三种口令并存：管理员仍可全权操作
+    assert.equal((await call('PROPFIND', `/webdav/${year}/`, adminToken, { headers: { Depth: '1' } })).status, 207);
+    // 顾客：能看、能建目录、能上传
+    assert.equal((await call('PROPFIND', `/webdav/${year}/`, customerSecret, { headers: { Depth: '1' } })).status, 207);
+    assert.equal((await call('MKCOL', `/webdav/${year}/${batch}/${cDir}`, customerSecret)).status, 201);
+    assert.equal((await call('PUT', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret, { body: 'from customer' })).status, 201);
+    const got = await call('GET', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret);
+    assert.equal(got.status, 200);
+    assert.equal(await got.text(), 'from customer');
+    // 顾客：不能删除、不能改名、不能建批次
+    assert.equal((await call('DELETE', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret)).status, 403);
+    assert.equal((await call('MOVE', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret, {
+      headers: { Destination: `${origin}/webdav/${year}/${batch}/${cDir}/d.txt` },
+    })).status, 403);
+    assert.equal((await call('MKCOL', `/webdav/${year}/${cNew}`, customerSecret)).status, 403);
+    // 访客：只能看和下载
+    assert.equal((await call('PROPFIND', `/webdav/${year}/`, visitorSecret, { headers: { Depth: '1' } })).status, 207);
+    assert.equal((await call('GET', `/webdav/${year}/${batch}/${cDir}/c.txt`, visitorSecret)).status, 200);
+    assert.equal((await call('PUT', `/webdav/${year}/${batch}/v.txt`, visitorSecret, { body: 'nope' })).status, 403);
+    assert.equal((await call('MKCOL', `/webdav/${year}/${batch}/${vDir}`, visitorSecret)).status, 403);
+    assert.equal((await call('DELETE', `/webdav/${year}/${batch}/${cDir}/c.txt`, visitorSecret)).status, 403);
+    // 错误口令仍然 401
+    assert.equal((await call('PROPFIND', `/webdav/${year}/`, 'wrong-secret', { headers: { Depth: '0' } })).status, 401);
+    // 被拒绝的写操作确实没落库
+    const manifest = await readManifest(year);
+    const dir = manifest.batches[0].tree.c.find(r => r.n === '顾客目录');
+    assert.deepEqual(dir.c.map(r => r.n), ['c.txt']);
+    assert.equal(manifest.batches.some(b => b.name === '顾客自建批次'), false);
   });
 
   await t.test('short link requires the pin and throttles guessing', async () => {

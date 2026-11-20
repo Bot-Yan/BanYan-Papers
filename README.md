@@ -45,7 +45,15 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 
 支持 `PROPFIND`（列出）、`GET`/`HEAD`（含 Range）、`PUT`（写对象库 + 改清单 + 记 uplog）、`MKCOL`、`MOVE`、`DELETE`（摘出清单后按引用回收对象）、`LOCK`/`UNLOCK`（返回合法 token，不真正互斥）、`PROPPATCH`（回成功不存属性）。
 
-鉴权复用主服务的 `TREE2_TOKEN`：`Basic` 时用户名任意、密码填 token；也接受 `Bearer`。`OPTIONS` 排在鉴权之前放行，否则 Windows「添加网络位置」拿不到 `DAV: 1,2` 会判定文件夹无效。
+鉴权：Basic 用户名任意、密码填以下任一口令（也接受 `Bearer`），**口令决定角色**：
+
+| 环境变量 | 角色 | 能做什么 |
+|---|---|---|
+| `TREE2_TOKEN` / `TREE2_WEBDAV_TOKEN` | 管理员 | 全部读写：上传、建批次、改名、移动、下架 |
+| `TREE2_CUSTOMER_TOKEN` | 顾客 | 只在批次内新建目录与上传文件；不能删除、移动、改名，也不能新建批次 |
+| `TREE2_VISITOR_TOKEN` | 访客 | 只读：`PROPFIND` 列出、`GET`/`HEAD` 下载 |
+
+`OPTIONS` 排在鉴权之前放行，否则 Windows「添加网络位置」拿不到 `DAV: 1,2` 会判定文件夹无效。越权请求返回 403 并说明原因。
 
 写操作落在 `/webdav/<届>/<批次>/…`；批次级操作也走 WebDAV，Console 不再需要：
 

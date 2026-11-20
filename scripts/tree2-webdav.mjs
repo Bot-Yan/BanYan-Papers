@@ -42,6 +42,8 @@ export function createWebdavHandler({
   uplogFile,      // uplog.json
   token,          // 主服务口令；空则不加鉴权（仅本机）
   webdavToken,    // WebDAV 专用口令（可与主口令并行有效）
+  customerToken,  // 顾客口令：只能新建批次目录与上传，不能删改
+  visitorToken,   // 访客口令：只读（列出 + 下载）
   collectGarbage, // 可选：删除后回收无引用对象（由主服务注入，做全库引用检查）
   ingestPush,     // 可选：入库推送队列（主服务注入），WebDAV 上传后也要通知
   stageOf = (name) => (/^[ABCDEFGHZ]/i.test(name) ? name.slice(0, 1).toUpperCase() : '省外'),
@@ -139,20 +141,56 @@ export function createWebdavHandler({
     return diff === 0;
   };
 
-  // 主口令与 WebDAV 专用口令并行有效：console/backend/bot 继续用主口令，
-  // WebDAV 客户端可以用专用口令，两套互不影响，专用口令可单独轮换。
-  const accepted = [token, webdavToken].filter((value) => typeof value === 'string' && value.length > 0);
-  const matchAny = (value) => accepted.some((expected) => same(value, expected));
+  // 三级账号：
+  //   admin    主口令 / WebDAV 专用口令 —— 读写全部
+  //   customer 只能新建批次目录与上传文件，不能删除、移动、改名
+  //   visitor  只读：列出与下载
+  // 主口令与 WebDAV 专用口令并行有效，console/backend/bot 继续用主口令。
+  const adminTokens = [token, webdavToken].filter((value) => typeof value === 'string' && value.length > 0);
+  const customerTokens = [customerToken].filter((value) => typeof value === 'string' && value.length > 0);
+  const visitorTokens = [visitorToken].filter((value) => typeof value === 'string' && value.length > 0);
+  const anyCredential = adminTokens.length + customerTokens.length + visitorTokens.length > 0;
 
-  function authorized(req) {
-    if (!accepted.length) return true;
+  function matchAny(list, value) {
+    return list.some((expected) => same(value, expected));
+  }
+
+  /** 解析请求身份：'admin' | 'customer' | 'visitor' | null */
+  function identify(req) {
+    if (!anyCredential) return 'admin'; // 未配口令时全放开（仅本机开发）
     const h = req.headers.authorization || '';
-    if (h.startsWith('Bearer ')) return matchAny(h.slice(7));
-    if (h.startsWith('Basic ')) {
+    let secret = '';
+    if (h.startsWith('Bearer ')) secret = h.slice(7);
+    else if (h.startsWith('Basic ')) {
       try {
         const [user, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(':');
-        return Boolean(user) && matchAny(pass || ''); // 用户名任意（Windows 要求非空）
-      } catch { return false; }
+        if (!user) return null; // Windows 要求用户名非空
+        secret = pass || '';
+      } catch { return null; }
+    }
+    if (!secret) return null;
+    // 口令决定角色：不同角色发不同口令，用户名随意（部分客户端只认固定用户）
+    if (matchAny(adminTokens, secret)) return 'admin';
+    if (matchAny(customerTokens, secret)) return 'customer';
+    if (matchAny(visitorTokens, secret)) return 'visitor';
+    return null;
+  }
+
+  const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PROPFIND', 'PROPPATCH', 'LOCK', 'UNLOCK']);
+
+  /**
+   * 这个角色能否用这个方法操作该路径。
+   * segs 是 /webdav/ 之后的路径段（如 ['2027', '批次', '子目录', 'a.pdf']）。
+   * customer 额外限制：不能新建批次（MKCOL 至少要到第 3 段，即批次内的目录）。
+   */
+  function allows(role, method, segs = []) {
+    if (role === 'admin') return true;
+    if (role === 'visitor') return READ_METHODS.has(method);
+    if (role === 'customer') {
+      if (READ_METHODS.has(method)) return true;
+      if (method === 'MKCOL') return segs.length >= 3; // 批次内建目录；新建批次需管理员
+      if (method === 'PUT') return segs.length >= 3;   // 文件必须落在批次内
+      return false;
     }
     return false;
   }
@@ -472,9 +510,17 @@ export function createWebdavHandler({
       });
       return res.end();
     }
-    if (!authorized(req)) {
+    const role = identify(req);
+    if (!role) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="tree2"' });
-      return res.end('需要口令：用户名任意，密码 = TREE2_TOKEN');
+      return res.end('需要口令：用户名任意，密码填管理员 / 顾客 / 访客口令之一');
+    }
+    const method = req.method || 'GET';
+    if (!allows(role, method, segs)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end(
+        role === 'visitor' ? '访客账号只读，不能修改资料库' : '顾客账号只能新建目录与上传文件，不能删除或移动',
+      );
     }
     try {
       if (segs.some(badSeg)) { res.writeHead(400); return res.end('路径不合法'); }
