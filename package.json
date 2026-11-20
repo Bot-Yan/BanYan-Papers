@@ -5,6 +5,8 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "dev": "node scripts/preview-local.mjs",
-    "preview": "node scripts/preview-local.mjs"
+    "preview": "node scripts/preview-local.mjs",
+    "check": "node --check scripts/tree2-files-server.mjs",
+    "test": "node --test test/tree2-upload.test.mjs"
   }
 }
