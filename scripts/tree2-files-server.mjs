@@ -2346,6 +2346,7 @@ const webdav = createWebdavHandler({
   // 主口令留给 console/backend/bot，WebDAV 客户端用这一套，可单独轮换不影响其它服务。
   webdavToken: process.env.TREE2_WEBDAV_TOKEN || '',
   collectGarbage,   // 删除后回收无引用对象（全库引用检查）
+  ingestPush,       // 与主服务共用推送队列：WebDAV 上传也要通知群里
   stageOf: t2StageOf,
   typeOf: t2TypeOf,
   log: (m) => console.log(m),

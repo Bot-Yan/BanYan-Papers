@@ -43,6 +43,7 @@ export function createWebdavHandler({
   token,          // 主服务口令；空则不加鉴权（仅本机）
   webdavToken,    // WebDAV 专用口令（可与主口令并行有效）
   collectGarbage, // 可选：删除后回收无引用对象（由主服务注入，做全库引用检查）
+  ingestPush,     // 可选：入库推送队列（主服务注入），WebDAV 上传后也要通知
   stageOf = (name) => (/^[ABCDEFGHZ]/i.test(name) ? name.slice(0, 1).toUpperCase() : '省外'),
   typeOf = () => '考试',
   yearLabel = (y) => `${y}届`,
@@ -272,6 +273,19 @@ export function createWebdavHandler({
     }
     await saveManifest(year, m);
     await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
+    // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件，
+    // 否则「通过 WebDAV 传的文件」永远不会通知到群里。
+    if (ingestPush && (existing === undefined || existing.k !== key)) {
+      await ingestPush.enqueue({
+        year,
+        batchId: batch.tree.folderId,
+        batch: batch.name,
+        name: fileName,
+        origin: 'admin',
+        key,
+        folder: segs.slice(1, -1),
+      }).catch((error) => log(`[webdav] 入库推送排队失败：${error.message}`));
+    }
     log(`[webdav] PUT ${segs.join('/')} (${size} B) → ${key}${existedObject ? '（复用已有对象）' : ''}`);
     res.writeHead(existing ? 204 : 201);
     res.end();
