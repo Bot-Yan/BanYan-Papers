@@ -163,7 +163,10 @@ export function createIngestPush({ sharesDir, endpoint, token, writeLibrary, rea
             }));
           }
           const manifest = manifests.get(event.year);
-          const batch = manifest?.batches?.find((item) => item.tree.folderId === event.batchId);
+          // 优先用 folderId 定位；老数据或 WebDAV 建出来的批次可能没有 folderId，
+          // 退回用事件里带的批次名匹配，避免整条推送被当成「文件不存在」丢掉。
+          const batch = manifest?.batches?.find((item) => item.tree.folderId === event.batchId)
+            || manifest?.batches?.find((item) => item.name === event.batch);
           // 重启可能留下「事件已暂存但 manifest 尚未替换」的残局；
           // 发出去之前回查一次，确认文件真的在 manifest 里，避免误报。
           const parent = folder.slice(1).reduce(

@@ -24,6 +24,10 @@ import path from 'node:path';
 
 const XML = 'application/xml; charset=utf-8';
 
+/** 目录 ID 形状（与 tree2-folders.mjs 的 isFolderId 一致） */
+const isFolderId = (value) =>
+  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+
 /** 新建批次节点（与主服务 newBatch 同结构：名字推导 stage/type/date + 空目录树）。 */
 function newBatch({ name, stageOf, typeOf }) {
   return {
@@ -82,7 +86,16 @@ export function createWebdavHandler({
     const countFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countFiles(c) : 1), 0);
     const countDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
     const sumBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
+    // 写盘前补齐所有目录的 folderId：推送、口令、稳定分享链接都靠它定位批次。
+    // WebDAV 只走这里，不像主服务那样会调 assignFolderIds，曾导致 WebDAV
+    // 建出来的批次 folderId 为空、入库推送全被丢弃。
+    const assignIds = (node) => {
+      if (!node || node.t !== 'd') return;
+      if (!isFolderId(node.folderId)) node.folderId = randomUUID();
+      for (const child of node.c || []) assignIds(child);
+    };
     for (const b of m.batches || []) {
+      assignIds(b.tree);
       b.files = countFiles(b.tree);
       b.dirs = countDirs(b.tree);
       b.bytes = sumBytes(b.tree);
@@ -315,19 +328,19 @@ export function createWebdavHandler({
       (node.c = node.c || []).push({ n: fileName, t: 'f', s: size, h: sha256, k: key, e: ext, w: today });
     }
     await saveManifest(year, m);
-    // 同一文件在短窗口内重复 PUT 时（Windows 临时名/重试）不再写重复的 uplog 与推送事件
+    // Windows 资源管理器上传会先 PUT 一个 0 字节占位、再 PUT 真实内容。
+    // 空文件既不该推送，也不能占用去重窗口——否则紧随其后的真实内容会被
+    // 误判成「重复 PUT」而永远不通知群里。
+    const emptyUpload = size === 0;
     const pushSignature = `${batch.name}/${segs.slice(1).join('/')}|${key}`;
     const now = Date.now();
-    const duplicate = now - (recentPushes.get(pushSignature) || 0) <= PUSH_DEDUPE_MS;
-    if (!duplicate) recentPushes.set(pushSignature, now);
-    if (!duplicate) {
+    const duplicate = !emptyUpload && now - (recentPushes.get(pushSignature) || 0) <= PUSH_DEDUPE_MS;
+    if (!emptyUpload && !duplicate) recentPushes.set(pushSignature, now);
+    if (!emptyUpload && !duplicate) {
       await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
     }
     // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件。
-    // Windows 资源管理器复制文件时会先写临时名再改名、失败还会重试，同一个
-    // 文件常常 PUT 两三次；这里按「路径 + 存储键」做一个短窗口去重，
-    // 避免群里收到重复条目。
-    if (ingestPush && !duplicate) {
+    if (ingestPush && !emptyUpload && !duplicate) {
       // 只保留最近的一段，避免长期运行内存增长
       if (recentPushes.size > 500) {
         for (const [signature, at] of recentPushes) if (now - at > PUSH_DEDUPE_MS) recentPushes.delete(signature);
