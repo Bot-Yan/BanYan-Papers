@@ -62,7 +62,7 @@ async function seedPreview() {
 function printLinks(port) {
   const local = `http://127.0.0.1:${port}`;
   console.log(`本地示例    ${local}/tree2/index.html?api=reset`);
-  console.log(`本地管理    ${local}/tree2/admin.html（口令：${token}）`);
+  console.log(`WebDAV      ${local}/webdav/（用户任意，密码 ${token}）`);
 }
 
 async function existingPreview(port) {

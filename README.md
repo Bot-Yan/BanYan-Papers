@@ -11,7 +11,7 @@ tree2 内容站 + 内容寻址文件库（files.example.com）。服务入口为
 | `public/tree2/`（除 data/ 与根目录 2026/2027.json） | 仓库 | rsync 覆盖 |
 | `public/tree2/music-custom.js` / `music-custom.css` | 仓库（给 Navidrome 用，不是 tree2 页面的资源） | rsync 覆盖；由 Navidrome 的 customhead/theme 引用本站的这两个地址，实现 ±15s/倍速/黑胶播放页外观。改完这两个文件要同步 Navidrome 侧的引用（文件名没变则不用） |
 | `public/tree2/data/`（2026/2027/seasons.json） | 服务器（运行时清单，上传/删除/重扫都会改写） | `.deployignore` 保护 |
-| `/srv/treenext/data/` | 服务器（上传日志、分享映射、下载统计、顾客口令、Navidrome 配置） | `.deployignore` 保护。音频预览优先走 `navidrome.json` 的 `internal`（如 `http://127.0.0.1:4533`），未配置或未同步时从本地对象读取 |
+| `/srv/treenext/data/` | 服务器（上传日志、分享映射、下载统计、Navidrome 配置） | `.deployignore` 保护。音频预览优先走 `navidrome.json` 的 `internal`（如 `http://127.0.0.1:4533`），未配置或未同步时从本地对象读取 |
 | `/srv/treenext/storage/` | 服务器（内容寻址对象库 objects/） | `.deployignore` 保护 |
 | `/srv/treenext/preview-cache/`、`backups/` | 服务器 | `.deployignore` 保护 |
 
@@ -92,7 +92,7 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 
 成功操作写进 `uplog.json`，事件类型为 `arrange`，保留 `season`、`action` 和原始路径参数。离线重扫工具需要按日志顺序把同样的目录操作应用到本地源树，再重新生成清单。发布前请验证重扫后仍保留这些改动；本仓库的部署工作流会保护当前运行时清单。
 
-顾客口令绑定批次 ID。批次改名后原口令继续可用，删除后同名新批次有自己的 ID。新目录分享用 `/d/id/<届别>/<folderId>`。旧路径在改名或移动后会跳转到原目录，路径复用也保留原链接的指向。删除、解散、压平移除的目录会显示说明和仍可打开的上级目录。
+目录绑定稳定的 folderId。目录改名后旧分享链接继续可用，删除后同名新目录有自己的 ID。新目录分享用 `/d/id/<届别>/<folderId>`。旧路径在改名或移动后会跳转到原目录，路径复用也保留原链接的指向。删除、解散、压平移除的目录会显示说明和仍可打开的上级目录。
 
 离线工具重放线上目录变更后，发布前运行下面的命令，让重扫结果继承线上清单的目录身份、旧链接映射和移除记录。输入使用同一届的最新线上清单与重扫结果。输出是新的文件。
 
@@ -107,7 +107,7 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 在 TreeNext 服务配置 `TREE2_UPDATE_ORIGIN`（业务 Backend 的 HTTPS 源站）和
 `TREE2_UPDATE_TOKEN`。在 Backend 设置相同的独立令牌，先应用
 `031-resource-push-digests` 迁移并更新 Bot，再在 Console「Bot → 订阅推送 → TreeNext」配置目标群。
-默认关闭推送，默认上传来源是管理上传。需要时可单独选择顾客口令上传。
+默认关闭推送。入库来源包含管理上传与 WebDAV 写入。
 
 通过 GitHub Actions 发布时，把 `TREE2_UPDATE_TOKEN` 配在仓库的 `production` Environment。
 工作流会将令牌和生产地址写入受保护的 `data/update-push.json`。进程环境中的配置优先。
@@ -154,7 +154,7 @@ push.start();                                                             // 服
 npm run dev
 ```
 
-使用 Node.js 24，无需安装依赖。打开 [本地示例](http://127.0.0.1:8787/tree2/index.html?api=reset)，进入示例文件夹查看预览。也可以打开 [本地管理页](http://127.0.0.1:8787/tree2/admin.html)，用口令 `tree2-local-preview` 测试上传。示例清单及上传文件保存在 `storage/local-preview/`，与生产数据隔离。本地示例音频使用与线上相同的 Navidrome 分享页：播放器页面和静态资源是线上原样副本，分享信息按本地清单生成。
+使用 Node.js 24，无需安装依赖。打开 [本地示例](http://127.0.0.1:8787/tree2/index.html?api=reset)，进入示例文件夹查看预览。上传统一走 WebDAV（`http://127.0.0.1:8787/webdav/`，用户名任意、密码 `tree2-local-preview`）。示例清单及上传文件保存在 `storage/local-preview/`，与生产数据隔离。本地示例音频使用与线上相同的 Navidrome 分享页：播放器页面和静态资源是线上原样副本，分享信息按本地清单生成。
 
 如果这份预览已在运行，再执行启动命令会显示现有地址。如果默认端口被其他程序使用，在命令提示符执行 `set "PORT=8788" && npm run dev`，或在 PowerShell 执行 `$env:PORT = '8788'; npm run dev`，再打开终端显示的网址。
 
