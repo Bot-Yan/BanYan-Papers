@@ -178,6 +178,11 @@ export function createWebdavHandler({
 
   const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PROPFIND', 'PROPPATCH', 'LOCK', 'UNLOCK']);
 
+  // 入库推送去重：同一「批次/路径 + 存储键」在该窗口内只推一次。
+  // Windows 复制文件会写临时名再改名、失败还会重试，同一文件常 PUT 多次。
+  const PUSH_DEDUPE_MS = 10 * 60 * 1000;
+  const recentPushes = new Map();
+
   /**
    * 这个角色能否用这个方法操作该路径。
    * segs 是 /webdav/ 之后的路径段（如 ['2027', '批次', '子目录', 'a.pdf']）。
@@ -310,10 +315,23 @@ export function createWebdavHandler({
       (node.c = node.c || []).push({ n: fileName, t: 'f', s: size, h: sha256, k: key, e: ext, w: today });
     }
     await saveManifest(year, m);
-    await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
-    // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件，
-    // 否则「通过 WebDAV 传的文件」永远不会通知到群里。
-    if (ingestPush && (existing === undefined || existing.k !== key)) {
+    // 同一文件在短窗口内重复 PUT 时（Windows 临时名/重试）不再写重复的 uplog 与推送事件
+    const pushSignature = `${batch.name}/${segs.slice(1).join('/')}|${key}`;
+    const now = Date.now();
+    const duplicate = now - (recentPushes.get(pushSignature) || 0) <= PUSH_DEDUPE_MS;
+    if (!duplicate) recentPushes.set(pushSignature, now);
+    if (!duplicate) {
+      await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
+    }
+    // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件。
+    // Windows 资源管理器复制文件时会先写临时名再改名、失败还会重试，同一个
+    // 文件常常 PUT 两三次；这里按「路径 + 存储键」做一个短窗口去重，
+    // 避免群里收到重复条目。
+    if (ingestPush && !duplicate) {
+      // 只保留最近的一段，避免长期运行内存增长
+      if (recentPushes.size > 500) {
+        for (const [signature, at] of recentPushes) if (now - at > PUSH_DEDUPE_MS) recentPushes.delete(signature);
+      }
       await ingestPush.enqueue({
         year,
         batchId: batch.tree.folderId,
