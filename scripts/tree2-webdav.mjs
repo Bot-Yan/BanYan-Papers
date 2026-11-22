@@ -55,7 +55,10 @@ export function createWebdavHandler({
 }) {
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const safeYear = (y) => {
-    const s = String(y || '').trim();
+    // 同时接受 "2027" 和 "2027届"：根目录列出的 displayname 是「2027届」，
+    // 但 href 是 /webdav/2027/。有客户端（RaiDrive 实测）按 displayname 拼子路径，
+    // 只认数字就会 400，表现为「批次目录打开是空的」。这里把「届」当别名。
+    const s = String(y || '').trim().replace(/届$/, '');
     if (!/^\d{4}$/.test(s)) throw Object.assign(new Error('届别不合法'), { status: 400 });
     return s;
   };
@@ -233,8 +236,12 @@ export function createWebdavHandler({
       if (depth !== '0') for (const y of await listYears()) pushNode(`/webdav/${y}`, yearLabel(y), { t: 'd' });
     } else if (target.kind === 'year') {
       const m = await loadManifest(target.year);
-      pushNode(`/webdav/${target.year}`, yearLabel(target.year), { t: 'd' });
-      if (depth !== '0') for (const b of m.batches || []) pushNode(`/webdav/${target.year}/${encodeURIComponent(b.name)}`, b.name, b.tree);
+      // 用「请求里的原始路径段」拼自身 href：届别可能以 2027 或 2027届 两种写法访问，
+      // 若固定回 /webdav/2027，客户端发现自己的 href 与请求路径不一致，
+      // 会把这行「自己」当成一个子目录显示出来（RaiDrive 实测）。
+      const selfHref = segs.length ? `/webdav/${segs.map(encodeURIComponent).join('/')}` : `/webdav/${target.year}`;
+      pushNode(selfHref, yearLabel(target.year), { t: 'd' });
+      if (depth !== '0') for (const b of m.batches || []) pushNode(`${selfHref}/${encodeURIComponent(b.name)}`, b.name, b.tree);
     } else {
       const { node } = target;
       const selfHref = `/webdav/${segs.map(encodeURIComponent).join('/')}`;
