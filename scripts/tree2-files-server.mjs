@@ -2076,6 +2076,7 @@ const ingestPush = createIngestPush({
   token: typeof updateCredentials.token === 'string' ? updateCredentials.token : '',
   writeLibrary,
   readManifest: readManifestFile,
+  log: (m) => console.log(m),
 });
 
 const UPLOG_FILE = path.join(SHARES_DIR, 'uplog.json');

@@ -83,7 +83,7 @@ export function updateLabel(value, limit, fallback) {
  * @param {(year: string) => Promise<any>} options.readManifest
  *        读某年的 manifest，用于发送前回查文件是否真的入库了
  */
-export function createIngestPush({ sharesDir, endpoint, token, writeLibrary, readManifest }) {
+export function createIngestPush({ sharesDir, endpoint, token, writeLibrary, readManifest, log = () => {} }) {
   const directory = path.join(sharesDir, 'update-outbox');
   let sending = false;
 
@@ -163,19 +163,31 @@ export function createIngestPush({ sharesDir, endpoint, token, writeLibrary, rea
             }));
           }
           const manifest = manifests.get(event.year);
-          // 优先用 folderId 定位；老数据或 WebDAV 建出来的批次可能没有 folderId，
-          // 退回用事件里带的批次名匹配，避免整条推送被当成「文件不存在」丢掉。
-          const batch = manifest?.batches?.find((item) => item.tree.folderId === event.batchId)
-            || manifest?.batches?.find((item) => item.name === event.batch);
-          // 重启可能留下「事件已暂存但 manifest 尚未替换」的残局；
-          // 发出去之前回查一次，确认文件真的在 manifest 里，避免误报。
+          if (!manifest) {
+            // 清单读不到是「暂时不知道」，不是「文件不存在」：保留事件下次再试，
+            // 否则清单一时不可用就会静默吞掉一堆推送。
+            log(`[tree2] ${event.year} 清单不可用，推送事件暂留待重试（${name}）`);
+            continue;
+          }
+          // 定位批次：folderId 是主键，但它可能在老数据/新入口里缺位，
+          // 所以退回用事件自带的名字。两条都不中才说明批次真的没了。
+          const batch = manifest.batches?.find((item) => item.tree.folderId === event.batchId)
+            || manifest.batches?.find((item) => item.name === event.batch);
+          if (!batch) {
+            log(`[tree2] 找不到批次「${event.batch}」，丢弃推送事件（${name}）`);
+            await fsp.rm(file, { force: true });
+            continue;
+          }
+          // 发出去前回查文件确实在清单里（重启可能留下「事件已暂存但清单未替换」的残局）。
           const parent = folder.slice(1).reduce(
             (node, segment) => node?.c?.find((child) => child.t === 'd' && child.n === segment),
-            batch?.tree,
+            batch.tree,
           );
           if (parent?.c?.some((child) => child.t === 'f' && child.n === name && child.k === key)) {
             events.push({ file, event: { ...event, batch: updateLabel(batch.name, 200, '资料批次') } });
           } else {
+            // 文件确实不在清单里（可能已被删除或改名），这条事件没有意义。
+            log(`[tree2] 文件不在清单中，丢弃推送事件（${event.batch} / ${name}）`);
             await fsp.rm(file, { force: true });
           }
         }

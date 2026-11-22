@@ -21,12 +21,10 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+// 目录身份的唯一实现：主服务、WebDAV、离线重扫共用，避免各写一份后不一致
+import { assignFolderIds } from './tree2-folders.mjs';
 
 const XML = 'application/xml; charset=utf-8';
-
-/** 目录 ID 形状（与 tree2-folders.mjs 的 isFolderId 一致） */
-const isFolderId = (value) =>
-  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 
 /** 新建批次节点（与主服务 newBatch 同结构：名字推导 stage/type/date + 空目录树）。 */
 function newBatch({ name, stageOf, typeOf }) {
@@ -86,16 +84,10 @@ export function createWebdavHandler({
     const countFiles = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countFiles(c) : 1), 0);
     const countDirs = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? countDirs(c) + 1 : 0), 0);
     const sumBytes = (n) => (n.c || []).reduce((x, c) => x + (c.t === 'd' ? sumBytes(c) : c.s || 0), 0);
-    // 写盘前补齐所有目录的 folderId：推送、口令、稳定分享链接都靠它定位批次。
-    // WebDAV 只走这里，不像主服务那样会调 assignFolderIds，曾导致 WebDAV
-    // 建出来的批次 folderId 为空、入库推送全被丢弃。
-    const assignIds = (node) => {
-      if (!node || node.t !== 'd') return;
-      if (!isFolderId(node.folderId)) node.folderId = randomUUID();
-      for (const child of node.c || []) assignIds(child);
-    };
+    // 写盘前补齐所有目录的 folderId：推送、口令、稳定分享链接都靠它定位目录。
+    // 用共享的 assignFolderIds（主服务/离线重扫同一份实现），不要在这里另写一份。
+    assignFolderIds(m);
     for (const b of m.batches || []) {
-      assignIds(b.tree);
       b.files = countFiles(b.tree);
       b.dirs = countDirs(b.tree);
       b.bytes = sumBytes(b.tree);
