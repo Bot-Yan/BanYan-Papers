@@ -18,9 +18,10 @@
  */
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 // 目录身份的唯一实现：主服务、WebDAV、离线重扫共用，避免各写一份后不一致
 import { assignFolderIds } from './tree2-folders.mjs';
 
@@ -42,6 +43,8 @@ export function createWebdavHandler({
   dataDir,        // 清单目录（.../public/tree2/data）
   objectsDir,     // 对象库（.../storage/tree2/objects）
   uplogFile,      // uplog.json
+  writeLibrary,   // 可选：主服务的串行写队列。WebDAV 的清单读-改-写进同一把锁，
+                  // 否则并发 PUT 会互相覆盖（实测两个并发 PUT 常常只剩一个条目）
   token,          // 主服务口令；空则不加鉴权（仅本机）
   webdavToken,    // WebDAV 专用口令（可与主口令并行有效）
   customerToken,  // 顾客口令：只能新建批次目录与上传，不能删改
@@ -284,79 +287,105 @@ export function createWebdavHandler({
     createReadStream(file).pipe(res);
   }
 
-  async function handlePut(req, res, segs) {
+  // 清单写操作（PUT/MKCOL/DELETE/MOVE）进主服务的串行写队列；未注入时就地执行（仅本机开发）
+  const inQueue = (fn) => (writeLibrary ? writeLibrary(fn) : fn());
+
+  async function handlePut(req, res, segs, role) {
     if (segs.length < 3) { res.writeHead(409); return res.end('必须写到批次目录里'); }
     const year = safeYear(segs[0]);
     const fileName = segs[segs.length - 1];
     if (badSeg(fileName)) { res.writeHead(400); return res.end('文件名不合法'); }
 
-    const tmp = path.join(objectsDir, '..', `.dav-${process.pid}-${Date.now()}.tmp`);
+    // 请求体先流式落盘（不在内存里攒整份文件），边写边算 sha256。
+    const tmp = path.join(objectsDir, '..', `.dav-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}.tmp`);
     const hash = createHash('sha256');
-    const chunks = [];
+    let size = 0;
     try {
-      for await (const chunk of req) { hash.update(chunk); chunks.push(chunk); }
-      await fsp.writeFile(tmp, Buffer.concat(chunks));
-    } catch {
+      await pipeline(req, async function* (source) {
+        for await (const chunk of source) { hash.update(chunk); size += chunk.length; yield chunk; }
+      }, createWriteStream(tmp));
+    } catch (error) {
       await fsp.rm(tmp, { force: true }).catch(() => {});
+      log(`[webdav] PUT 接收失败 ${segs.join('/')}: ${error.message}`);
       res.writeHead(500); return res.end('接收失败');
     }
-    const size = chunks.reduce((n, c) => n + c.length, 0);
     const sha256 = hash.digest('hex');
     const ext = (/\.[a-z0-9]{1,8}$/i.exec(fileName) || [''])[0].toLowerCase();
     const key = `${sha256.slice(0, 2)}/${sha256}${ext}`;
     const dst = keyPath(key);
     await fsp.mkdir(path.dirname(dst), { recursive: true });
-    const existedObject = await fsp.stat(dst).catch(() => null);
-    // 同哈希对象已存在 → 丢弃临时文件复用（不重复占空间）
-    await fsp.rename(tmp, dst).catch(async () => { await fsp.rm(tmp, { force: true }).catch(() => {}); });
 
-    const m = await loadManifest(year);
-    const batch = (m.batches || []).find((b) => b.name === segs[1]);
-    if (!batch) { res.writeHead(409); return res.end('批次不存在（先建批次再上传）'); }
-    let node = batch.tree;
-    for (const s of segs.slice(2, -1)) {
-      let next = (node.c || []).find((c) => c.t === 'd' && c.n === s);
-      if (!next) { next = { n: s, t: 'd', c: [] }; (node.c = node.c || []).push(next); }
-      node = next;
+    // 清单的读-改-写与对象落盘放进主服务的串行写队列：
+    // 并发 PUT 互不覆盖，也不再和主服务的上传/整理互相踩清单。
+    // 任何一步失败都清掉临时文件：既不留孤儿对象，也不会留下缺对象的清单条目。
+    let existing;
+    let reusedObject = false;
+    try {
+      await inQueue(() => commitPut());
+    } catch (error) {
+      await fsp.rm(tmp, { force: true }).catch(() => {});
+      if (error && error.status) { res.writeHead(error.status); return res.end(error.message || ''); }
+      throw error;
     }
-    const existing = (node.c || []).find((c) => c.n === fileName && c.t === 'f');
-    const today = new Date().toISOString().slice(0, 10);
-    if (existing) {
-      Object.assign(existing, { s: size, h: sha256, k: key, e: ext, w: existing.w || today });
-    } else {
-      (node.c = node.c || []).push({ n: fileName, t: 'f', s: size, h: sha256, k: key, e: ext, w: today });
-    }
-    await saveManifest(year, m);
-    // Windows 资源管理器上传会先 PUT 一个 0 字节占位、再 PUT 真实内容。
-    // 空文件既不该推送，也不能占用去重窗口——否则紧随其后的真实内容会被
-    // 误判成「重复 PUT」而永远不通知群里。
-    const emptyUpload = size === 0;
-    const pushSignature = `${batch.name}/${segs.slice(1).join('/')}|${key}`;
-    const now = Date.now();
-    const duplicate = !emptyUpload && now - (recentPushes.get(pushSignature) || 0) <= PUSH_DEDUPE_MS;
-    if (!emptyUpload && !duplicate) recentPushes.set(pushSignature, now);
-    if (!emptyUpload && !duplicate) {
-      await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
-    }
-    // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件。
-    if (ingestPush && !emptyUpload && !duplicate) {
-      // 只保留最近的一段，避免长期运行内存增长
-      if (recentPushes.size > 500) {
-        for (const [signature, at] of recentPushes) if (now - at > PUSH_DEDUPE_MS) recentPushes.delete(signature);
-      }
-      await ingestPush.enqueue({
-        year,
-        batchId: batch.tree.folderId,
-        batch: batch.name,
-        name: fileName,
-        origin: 'admin',
-        key,
-        folder: segs.slice(1, -1),
-      }).catch((error) => log(`[webdav] 入库推送排队失败：${error.message}`));
-    }
-    log(`[webdav] PUT ${segs.join('/')} (${size} B) → ${key}${existedObject ? '（复用已有对象）' : ''}`);
+    log(`[webdav] PUT ${segs.join('/')} (${size} B) → ${key}${reusedObject ? '（复用已有对象）' : ''}`);
     res.writeHead(existing ? 204 : 201);
     res.end();
+
+    async function commitPut() {
+      const m = await loadManifest(year);
+      const batch = (m.batches || []).find((b) => b.name === segs[1]);
+      if (!batch) throw Object.assign(new Error('批次不存在（先建批次再上传）'), { status: 409 });
+      let node = batch.tree;
+      for (const s of segs.slice(2, -1)) {
+        let next = (node.c || []).find((c) => c.t === 'd' && c.n === s);
+        if (!next) { next = { n: s, t: 'd', c: [] }; (node.c = node.c || []).push(next); }
+        node = next;
+      }
+      existing = (node.c || []).find((c) => c.n === fileName && c.t === 'f');
+      // 顾客账号只能新建文件，或给自己刚传的 0 字节占位补真实内容；
+      // 覆盖别人的既有文件属于越权。
+      if (role === 'customer' && existing && existing.s > 0) {
+        throw Object.assign(new Error('顾客账号不能覆盖已有文件，请换一个文件名或找管理员'), { status: 403 });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      if (existing) {
+        Object.assign(existing, { s: size, h: sha256, k: key, e: ext, w: existing.w || today });
+      } else {
+        (node.c = node.c || []).push({ n: fileName, t: 'f', s: size, h: sha256, k: key, e: ext, w: today });
+      }
+      await saveManifest(year, m);
+      const existedObject = await fsp.stat(dst).catch(() => null);
+      reusedObject = Boolean(existedObject);
+      // 同哈希对象已存在 → 丢弃临时文件复用（不重复占空间）
+      await fsp.rename(tmp, dst).catch(async () => { await fsp.rm(tmp, { force: true }).catch(() => {}); });
+      // Windows 资源管理器上传会先 PUT 一个 0 字节占位、再 PUT 真实内容。
+      // 空文件既不该推送，也不能占用去重窗口——否则紧随其后的真实内容会被
+      // 误判成「重复 PUT」而永远不通知群里。
+      const emptyUpload = size === 0;
+      const pushSignature = `${batch.name}/${segs.slice(1).join('/')}|${key}`;
+      const now = Date.now();
+      const duplicate = !emptyUpload && now - (recentPushes.get(pushSignature) || 0) <= PUSH_DEDUPE_MS;
+      if (!emptyUpload && !duplicate) recentPushes.set(pushSignature, now);
+      if (!emptyUpload && !duplicate) {
+        await appendUplog({ season: year, key, name: fileName, folder: segs.slice(1, -1).join('/'), sha256, at: new Date().toISOString() });
+      }
+      // 入库推送：和主服务的上传接口一样，WebDAV 写入也要排队一条事件。
+      if (ingestPush && !emptyUpload && !duplicate) {
+        // 只保留最近的一段，避免长期运行内存增长
+        if (recentPushes.size > 500) {
+          for (const [signature, at] of recentPushes) if (now - at > PUSH_DEDUPE_MS) recentPushes.delete(signature);
+        }
+        await ingestPush.enqueue({
+          year,
+          batchId: batch.tree.folderId,
+          batch: batch.name,
+          name: fileName,
+          origin: 'admin',
+          key,
+          folder: segs.slice(1, -1),
+        }).catch((error) => log(`[webdav] 入库推送排队失败：${error.message}`));
+      }
+    }
   }
 
   async function handleMkcol(req, res, segs) {
@@ -503,6 +532,10 @@ export function createWebdavHandler({
     };
     const src = locate(segs);
     if (!src) { res.writeHead(404); return res.end('源条目不存在'); }
+    // 文件夹不能移进自己或自己的子目录：先摘除再挂回，挂回的部分不在树里，目录会凭空消失
+    if (src.node.t === 'd' && toSegs.length >= segs.length && toSegs.slice(0, segs.length).every((seg, i) => seg === segs[i])) {
+      res.writeHead(409); return res.end('文件夹不能移入自身或其子目录');
+    }
     const dstBatch = (m.batches || []).find((x) => x.name === toSegs[1]);
     if (!dstBatch) { res.writeHead(409); return res.end('目标批次不存在'); }
     let dstParent = dstBatch.tree;
@@ -560,10 +593,10 @@ export function createWebdavHandler({
         if (target.kind !== 'file') { res.writeHead(405); return res.end('目录不能直接 GET，用 PROPFIND'); }
         return await handleGet(req, res, target);
       }
-      if (req.method === 'PUT') return await handlePut(req, res, segs);
-      if (req.method === 'MKCOL') return await handleMkcol(req, res, segs);
-      if (req.method === 'DELETE') return await handleDelete(req, res, segs);
-      if (req.method === 'MOVE') return await handleMove(req, res, segs);
+      if (req.method === 'PUT') return await handlePut(req, res, segs, role);
+      if (req.method === 'MKCOL') return await inQueue(() => handleMkcol(req, res, segs));
+      if (req.method === 'DELETE') return await inQueue(() => handleDelete(req, res, segs));
+      if (req.method === 'MOVE') return await inQueue(() => handleMove(req, res, segs));
       // Windows 资源管理器写入前会尝试 LOCK：给一个「假锁」（不真正互斥，
       // 但返回合法 token），否则它会降级成只读挂载或直接放弃。
       if (req.method === 'LOCK') {

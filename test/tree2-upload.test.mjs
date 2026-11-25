@@ -432,6 +432,9 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     const got = await call('GET', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret);
     assert.equal(got.status, 200);
     assert.equal(await got.text(), 'from customer');
+    // 顾客：不能覆盖已有文件（只允许新建，或给 0 字节占位补内容）
+    assert.equal((await call('PUT', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret, { body: 'overwritten' })).status, 403);
+    assert.equal(await (await call('GET', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret)).text(), 'from customer');
     // 顾客：不能删除、不能改名、不能建批次
     assert.equal((await call('DELETE', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret)).status, 403);
     assert.equal((await call('MOVE', `/webdav/${year}/${batch}/${cDir}/c.txt`, customerSecret, {
@@ -451,6 +454,39 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     const dir = manifest.batches[0].tree.c.find(r => r.n === '顾客目录');
     assert.deepEqual(dir.c.map(r => r.n), ['c.txt']);
     assert.equal(manifest.batches.some(b => b.name === '顾客自建批次'), false);
+  });
+
+  await t.test('webdav concurrent PUTs keep every entry (serialized manifest writes)', async () => {
+    const put = (name, body) => fetch(origin + '/webdav/2026/Shared/' + encodeURIComponent(name), {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body,
+      signal: AbortSignal.timeout(15000),
+    });
+    const [ra, rb] = await Promise.all([put('并发甲.txt', '甲的内容'), put('并发乙.txt', '乙的内容')]);
+    assert.equal(ra.status, 201, `甲 => ${ra.status}`);
+    assert.equal(rb.status, 201, `乙 => ${rb.status}`);
+    const shared = (await readManifest('2026')).batches.find(b => b.name === 'Shared').tree.c.map(r => r.n);
+    assert.ok(shared.includes('并发甲.txt') && shared.includes('并发乙.txt'), `两个 PUT 都要留在清单里：${shared.join('、')}`);
+  });
+
+  await t.test('webdav MOVE refuses to move a folder into its own subtree', async () => {
+    const mk = async (pathname) => {
+      const made = await fetch(origin + pathname, { method: 'MKCOL', headers: { Authorization: `Bearer ${adminToken}` }, signal: AbortSignal.timeout(10000) });
+      assert.equal(made.status, 201, `MKCOL ${pathname} => ${made.status}`);
+    };
+    await mk('/webdav/2026/Shared/自环目录');
+    await mk('/webdav/2026/Shared/自环目录/内部');
+    const moved = await fetch(origin + '/webdav/2026/Shared/' + encodeURIComponent('自环目录'), {
+      method: 'MOVE',
+      headers: { Authorization: `Bearer ${adminToken}`, Destination: origin + '/webdav/2026/Shared/' + encodeURIComponent('自环目录') + '/' + encodeURIComponent('内部') + '/' + encodeURIComponent('挪走') },
+      signal: AbortSignal.timeout(10000),
+    });
+    assert.equal(moved.status, 409);
+    const shared = (await readManifest('2026')).batches.find(b => b.name === 'Shared').tree;
+    const dir = shared.c.find(r => r.n === '自环目录');
+    assert.ok(dir, '目录仍要在清单里');
+    assert.ok(dir.c.some(r => r.n === '内部'), '子目录仍要在清单里');
   });
 
   await t.test('short link requires the pin and throttles guessing', async () => {

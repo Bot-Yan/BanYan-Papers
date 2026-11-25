@@ -2053,6 +2053,7 @@ const webdav = createWebdavHandler({
   dataDir: cfg.data,
   objectsDir: OBJECTS,
   uplogFile: UPLOG_FILE,
+  writeLibrary,    // WebDAV 的清单写操作进主服务串行队列，防并发互踩
   token: cfg.token,
   // WebDAV 专用口令（TREE2_WEBDAV_TOKEN）：与主口令并行有效。
   // 主口令留给 console/backend/bot，WebDAV 客户端用这一套，可单独轮换不影响其它服务。
