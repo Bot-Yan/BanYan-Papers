@@ -2148,12 +2148,6 @@ setInterval(sweepUploads, 6 * 3600 * 1000).unref();
 
 await fsp.mkdir(OBJECTS, { recursive: true });
 await fsp.mkdir(TMP, { recursive: true });
-try {
-  await migrateFolderIds();
-  await bindLegacyTokens();
-} catch (error) {
-  console.error('[tree2] 无法迁移目录标识或旧口令，尚未迁移的旧授权暂停使用', error);
-}
 sweepUploads();
 function onListenError(error) {
   console.error(`tree2 无法监听 ${cfg.host}:${cfg.port}（${error.code || error.message}）`);
