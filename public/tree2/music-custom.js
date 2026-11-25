@@ -613,8 +613,17 @@
     if (!player || player.querySelector('.t2-nd-footer')) return;
     var footer = document.createElement('footer');
     footer.className = 't2-nd-footer';
-    footer.innerHTML = '<span>© 2026 备考资料导航</span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a>';
+    footer.innerHTML = '<span>© 2026 备考资料导航</span><a class="t2-nd-icp" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" hidden></a>';
     player.appendChild(footer);
+    fillIcpLink(footer.querySelector('.t2-nd-icp'));
+  }
+
+  /* 备案号来自站点 API（服务端环境变量），仓库不存真实值 */
+  function fillIcpLink(anchor) {
+    if (!anchor) return;
+    fetch('/api/tree2/site').then(function (r) { return r.ok ? r.json() : null; }).then(function (site) {
+      if (site && site.icp) { anchor.textContent = site.icp; anchor.hidden = false; }
+    }).catch(function () {});
   }
 
   /* ---------------- 宠物 gif（可拖动） ---------------- */

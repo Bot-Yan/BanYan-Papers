@@ -71,7 +71,7 @@
       </div>
       <footer class="t2-site-footer">
         <span>© 2026 备考资料导航</span>
-        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a>
+        <a id="t2-icp" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" hidden></a>
       </footer>
     </main>
     <!-- 左栏（目录栏）收起钮：参考 DevTools console 的抽屉，贴栏右下角，收起时滑到屏幕左下角 -->
@@ -118,6 +118,15 @@
   <div class="t2-toast" id="t2-toast" role="status"></div>
 
   <script type="module" src="js/app.js?v=20261116-recent-list"></script>
+  <script>
+    // 备案号来自服务端环境变量（/api/tree2/site），仓库里不存真实值
+    (function () {
+      fetch('/api/tree2/site').then(function (r) { return r.ok ? r.json() : null; }).then(function (site) {
+        var a = document.getElementById('t2-icp');
+        if (a && site && site.icp) { a.textContent = site.icp; a.hidden = false; }
+      }).catch(function () {});
+    })();
+  </script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });

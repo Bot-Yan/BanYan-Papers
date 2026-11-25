@@ -24,6 +24,9 @@ GitHub Actions（`.github/workflows/deploy.yml`），在生产机上的自托管
 - 仓库变量 `DEPLOY_PATH` 可选（缺省 `/srv/treenext`）；rsync `--delete --exclude-from=.deployignore` 同步后 `systemctl restart tree2`，再用 `/api/tree2/health` 自检
 - runner 的 sudo 只放行部署用到的命令（mkdir / rsync / systemctl restart tree2）
 - 目录的 `folderId` 在每次写盘时补齐（`scripts/tree2-folders.mjs`），启动时不做迁移
+- 站点运行时配置（备案号等）走环境变量，样例见 `.env.example`；服务器上放 `/etc/treenext.env`
+  （`tree2.service` 的 `EnvironmentFile` 注入）。服务端渲染的页脚直接读，静态页与 Navidrome
+  页脚通过 `/api/tree2/site` 运行时取值；未配置时对应内容自动隐藏
 
 ## 删除语义（2026-11 修复后）
 

@@ -156,7 +156,7 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
       child.stdout.resume();
     }
   }
-  await start();
+  await start({ TREE2_ICP: '闽ICP备00000000号-1' });
   const readManifest = async year => JSON.parse(await readFile(join(data, year + '.json'), 'utf8'));
   async function api(path, { token = adminToken, method = 'GET', body, headers = {} } = {}) {
     const response = await fetch(origin + '/api/tree2/' + path, {
@@ -503,6 +503,12 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.equal((await api(`shortlink/${code}`, { method: 'DELETE' })).status, 200);
     const gone = await fetch(origin + `/s/${code}?pin=${pin}`, { signal: AbortSignal.timeout(5000) });
     assert.ok([404, 403, 429].includes(gone.status), `吊销后 => ${gone.status}`);
+  });
+
+  await t.test('site config endpoint serves ICP from environment', async () => {
+    const response = await fetch(origin + '/api/tree2/site', { signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).icp, '闽ICP备00000000号-1');
   });
 
   await t.test('whole batch can be merged into another batch', async () => {

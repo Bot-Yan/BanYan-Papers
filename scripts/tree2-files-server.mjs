@@ -134,6 +134,8 @@ function parseArgs(argv) {
 }
 
 const cfg = parseArgs(process.argv.slice(2));
+// 站点运行时配置（如备案号）只放服务器环境，不进仓库：/etc/treenext.env → systemd EnvironmentFile
+cfg.icp = process.env.TREE2_ICP || '';
 const OBJECTS = path.join(cfg.store, 'objects');
 const TMP = path.join(cfg.store, 'tmp');
 const MAX_PARTS = 4096;
@@ -654,7 +656,7 @@ function canSharePreview(ext) {
   return ext === '.pdf' || SHARE_IMAGES.has(ext) || SHARE_VIDEO.has(ext) || AUDIO_EXT.has(ext) ||
     SHARE_WORD.has(ext) || SHARE_TABLES.has(ext) || SHARE_TEXT.has(ext);
 }
-const shareFooter = `<footer class="foot"><span>© 2026 备考资料导航</span> <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备00000000号-1</a></footer>`;
+const shareFooter = `<footer class="foot"><span>© 2026 备考资料导航</span>${cfg.icp ? ` <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${escHtml(cfg.icp)}</a>` : ''}</footer>`;
 
 const SHARE_PAGE_CSS = `
  body{margin:0;padding:48px 18px;font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif;color:var(--t2-ink);
@@ -1914,6 +1916,11 @@ async function appendUplog(entry) {
   }
 }
 
+
+// 站点公开配置：静态页（index.html、Navidrome 页脚）从这里取备案号等环境值
+route('GET', /^\/api\/tree2\/site$/, (req, res) => {
+  json(res, 200, { icp: cfg.icp }, { 'Cache-Control': 'no-store' });
+});
 
 route('GET', /^\/api\/tree2\/health$/, async (req, res) => {
   const files = await fsp.readdir(cfg.data).catch(() => []);
