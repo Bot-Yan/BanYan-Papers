@@ -1919,7 +1919,8 @@ async function appendUplog(entry) {
 
 // 站点公开配置：静态页（index.html、Navidrome 页脚）从这里取备案号等环境值
 route('GET', /^\/api\/tree2\/site$/, (req, res) => {
-  json(res, 200, { icp: cfg.icp }, { 'Cache-Control': 'no-store' });
+  // 备案号一辈子不变：让浏览器当天直接用本地缓存，不必每次回源拉这几十字节
+  json(res, 200, { icp: cfg.icp }, { 'Cache-Control': 'public, max-age=86400' });
 });
 
 route('GET', /^\/api\/tree2\/health$/, async (req, res) => {
