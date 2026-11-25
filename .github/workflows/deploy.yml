@@ -45,7 +45,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # 固定版本：runner 的工具缓存里预置了同版本的 Node（_work/_tool），
+          # 命中缓存即不出网下载（GitHub Releases 的归档走生产机直连要 20 分钟）
+          node-version: 24.20.0
 
       - name: Syntax check
         run: cd /srv/treenext-src && node --check scripts/tree2-files-server.mjs
