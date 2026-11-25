@@ -17,12 +17,13 @@ tree2 内容站 + 内容寻址文件库（files.example.com）。服务入口为
 
 ## 部署
 
-GitHub Actions（`.github/workflows/deploy.yml`，参考 landing-page 模式）：
+GitHub Actions（`.github/workflows/deploy.yml`），在生产机上的自托管 runner 里执行：
 
-- `push` 到 main 或手动 `workflow_dispatch` 触发
-- secrets：`SERVER_SSH_KEY`、`SERVER_KNOWN_HOSTS`、`SERVER_HOST`、`SERVER_PORT`、`SERVER_USER`、`DEPLOY_PATH`
-- rsync `--delete --exclude-from=.deployignore` 同步到 `/srv/treenext/`，然后 `systemctl restart tree2`
-- 启动时为现有目录分配稳定的 `folderId`，并将旧顾客口令迁移到批次根目录的 ID。唯一匹配的授权会保留原链接、有效期和已用次数。未能唯一匹配的批次需要管理员核对后重发。
+- `push` 到 main 或手动 `workflow_dispatch` 触发；runner 标签 `treenext`，以 `actions-runner` 用户运行
+- 源码用服务器上预置的 `/srv/treenext-src`（公开仓库的 clone），每次只拉增量；不经 SSH，也不往 GitHub Secrets 里放服务器私钥
+- 仓库变量 `DEPLOY_PATH` 可选（缺省 `/srv/treenext`）；rsync `--delete --exclude-from=.deployignore` 同步后 `systemctl restart tree2`，再用 `/api/tree2/health` 自检
+- runner 的 sudo 只放行部署用到的命令（mkdir / rsync / systemctl restart tree2）
+- 目录的 `folderId` 在每次写盘时补齐（`scripts/tree2-folders.mjs`），启动时不做迁移
 
 ## 删除语义（2026-11 修复后）
 
@@ -109,8 +110,8 @@ node scripts/tree2-preserve-folder-ids.mjs online-2026.json scanned-2026.json re
 `031-resource-push-digests` 迁移并更新 Bot，再在 Console「Bot → 订阅推送 → TreeNext」配置目标群。
 默认关闭推送。入库来源包含管理上传与 WebDAV 写入。
 
-通过 GitHub Actions 发布时，把 `TREE2_UPDATE_TOKEN` 配在仓库的 `production` Environment。
-工作流会将令牌和生产地址写入受保护的 `data/update-push.json`。进程环境中的配置优先。
+`data/update-push.json` 是服务器上的运行数据（受 `.deployignore` 保护），部署不会改写它。
+换地址或令牌时直接改服务器上的这个文件，或用服务的环境变量覆盖；进程环境中的配置优先。
 
 入库事件通过运行时 `data/update-outbox/` 重试发往 Backend。启用合图时，同群从最近一次入库等待约两分钟，从第一条最多等待约五分钟。群消息附稳定的批次目录链接。离线重扫通过自己的发布工具写清单，目前未接入此事件。
 

@@ -15,16 +15,31 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 自托管 runner 就装在生产机上：拉取、测试、部署同机完成，不需要把服务器私钥放进 GitHub Secrets。
+    # runner 以 actions-runner 用户运行，标签 treenext，sudo 只放行部署用到的命令。
+    # 源码用服务器上预置的 /srv/treenext-src（公开仓库的 clone），每次只拉增量：
+    # 生产机直连 GitHub 下载大文件很慢，整仓 clone 会卡住。
+    # 推送配置 data/update-push.json 属于服务器运行数据，部署不改写。
+    runs-on: [self-hosted, linux, treenext]
+    timeout-minutes: 20
     environment:
       name: production
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Fetch source (pre-seeded clone)
+        run: |
+          set -euo pipefail
+          cd /srv/treenext-src
+          test -d .git
+          # 生产机直连 GitHub 偶发断流（GnuTLS -110），fetch 带退避重试
+          for i in 1 2 3 4 5; do
+            if git fetch --prune origin '+refs/heads/main:refs/remotes/origin/main'; then break; fi
+            if [ "$i" = 5 ]; then echo "git fetch 连续 5 次失败"; exit 1; fi
+            sleep $((i * 5))
+          done
+          # 固定到本次触发的提交；workflow_dispatch 时 GITHUB_SHA 是默认分支 HEAD
+          git reset --hard "$GITHUB_SHA"
+          git clean -ffdx
 
       # 单文件 Node 服务 + 静态站点，没有构建产物；语法检查当作最小编译门
       - name: Setup Node.js
@@ -33,80 +48,37 @@ jobs:
           node-version: 24
 
       - name: Syntax check
-        run: node --check scripts/tree2-files-server.mjs
+        run: cd /srv/treenext-src && node --check scripts/tree2-files-server.mjs
 
       - name: Test uploads and guest access
-        run: node --test test/tree2-upload.test.mjs
-
-      - name: Configure SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
-
-      - name: Configure known hosts
-        env:
-          SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SERVER_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          test -s ~/.ssh/known_hosts
+        run: cd /srv/treenext-src && node --test test/tree2-upload.test.mjs
 
       # 运行数据（清单 public/tree2/data/、data/、storage/、preview-cache/、backups/）
-      # 由 .deployignore 保护，rsync --delete 不会碰它们；仓库独有文件在此额外排除
+      # 由 .deployignore 保护，rsync --delete 不会碰它们；仓库独有文件在此额外排除。
+      # /srv/treenext 归 root：runner 用户借受限 sudo 同步。
       - name: Deploy to /srv/treenext
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
-          rsync -rz --delete --delete-delay \
+          set -euo pipefail
+          cd /srv/treenext-src
+          target="${DEPLOY_PATH:-/srv/treenext}"
+          test "$target" = /srv/treenext
+          sudo mkdir -p "$target"
+          sudo rsync -rz --delete --delete-delay \
             --no-perms --no-owner --no-group --no-times --omit-dir-times \
             --exclude-from=.deployignore \
             --exclude='.git' --exclude='.github' \
             --exclude='.deployignore' --exclude='.gitignore' --exclude='.gitattributes' \
             --exclude='README.md' \
             --exclude='/test/' \
-            -e "ssh -p ${SERVER_PORT}" \
-            ./ \
-            "${SERVER_USER}@${SERVER_HOST}:${DEPLOY_PATH}/"
+            ./ "$target/"
 
-      - name: Configure library update notifications
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          TREE2_UPDATE_TOKEN: ${{ secrets.TREE2_UPDATE_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$TREE2_UPDATE_TOKEN" ]]; then exit 0; fi
-          test "$DEPLOY_PATH" = /srv/treenext
-          [[ "$TREE2_UPDATE_TOKEN" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
-          { printf '%s\n' "$TREE2_UPDATE_TOKEN"; cat <<'REMOTE'
-          set -euo pipefail
-          [[ "$token" =~ ^[a-zA-Z0-9_-]{32,128}$ ]]
-          service_user="$(systemctl show tree2 --property=User --value)"
-          umask 077
-          dir=/srv/treenext/data
-          file="$(mktemp "$dir/.update-push.XXXXXXXX")"
-          trap 'rm -f -- "$file"' EXIT
-          printf '{"origin":"https://console.example.com","token":"%s"}\n' "$token" > "$file"
-          if [[ -n "$service_user" && "$service_user" != root && "$service_user" != "$(id -un)" ]]; then
-            setfacl -m "u:$service_user:r" "$file"
-          fi
-          mv -f -- "$file" "$dir/update-push.json"
-          REMOTE
-          } | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
-            'IFS= read -r token && export token && bash -s'
-
-      # SERVER_USER 需要有重启权限：root 直接可用；专用部署用户配 sudoers NOPASSWD
       - name: Restart service and verify
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh -o BatchMode=yes -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
-            "systemctl restart tree2 && sleep 1 && systemctl is-active tree2"
+          set -euo pipefail
+          sudo systemctl restart tree2
+          sleep 1
+          sudo systemctl is-active tree2
+          # 启动冒烟：进程活着还不够，服务要能应答自检接口
+          curl -fsS -m 5 http://127.0.0.1:8787/api/tree2/health >/dev/null
