@@ -39,14 +39,15 @@ jobs:
 
           const { workflow_run: run } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
           const repository = process.env.GITHUB_REPOSITORY;
-          const project = /^your-org\/(?:landing-page|console|backend|bot|wiki|treenext)$/i.exec(repository)?.[1]?.toLowerCase();
+          // 本工作流只为本仓库上报（job 级 if 已确保触发源是本仓库的 push/dispatch），
+          // 项目名按 backend 的项目清单固定为 treenext：改组织/仓库名不用再回来改正则。
+          // （原来的 /^your-org\/(...)$/ 正则是模板占位符，从未匹配过真实仓库，
+          //  一旦配上 CI_DEPLOY_API_ORIGIN 就必然在这里抛错——这就是每次部署后
+          //  Notify CI deployment 必失败的原因。）
+          const project = 'treenext';
           const origin = new URL(process.env.CI_DEPLOY_API_ORIGIN);
-          if (!project || origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
-            throw new Error('CI subscription requires a known repository and a valid HTTPS API origin.');
-          }
-          if (project !== 'treenext') {
-            console.log('This workflow only reports for treenext.');
-            process.exit(0);
+          if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
+            throw new Error('CI subscription requires a valid HTTPS API origin.');
           }
 
           const attempt = run.run_attempt || 1;
