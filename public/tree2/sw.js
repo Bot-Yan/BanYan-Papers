@@ -1,6 +1,6 @@
 // tree2 Service Worker：可安装 + 离线浏览目录（文件字节仍需联网）
 // 清单/页面网络优先（发布后学生立刻看到新版），静态资源缓存优先（秒开）
-const CACHE = 'tree2-pwa-v10';
+const CACHE = 'tree2-pwa-v11';
 // js/css 不进 SHELL：页面引用它们时都带 ?v= 版本参数（js/app.js?v=…），预缓存的
 // 无版本路径是不同的缓存键，永远命中不了，等于白白多下载一份。版本化资源的
 // 更新靠改 ?v=（缓存优先策略下新请求键不同，自然拿到新文件）。
@@ -22,7 +22,7 @@ self.addEventListener('fetch', (e) => {
   // 管理 API（含 /stats 统计——缓存它会让 admin.html 显示昨天的数据）、
   // 管理页 admin.html（历史名 up.html 也拦）、sw 自身：一律网络直连。
   // 部署后这些页面绝不能"卡回去"。
-  const publicCatalogue = !url.search && /^\/api\/tree2\/(?:seasons(?:\/\d{4})?|storage\/\d{4})$/.test(url.pathname);
+  const publicCatalogue = !url.search && /^\/api\/tree2\/(?:seasons(?:\/\d{4}(?:\/(?:index|batches\/[^/]+))?)|storage\/\d{4})$/.test(url.pathname);
   if (req.headers.has('Authorization') || req.headers.has('X-Tree2-Token') ||
       (url.pathname.startsWith('/api/') && !publicCatalogue) ||
       url.pathname.startsWith('/d/') || url.pathname.startsWith('/s/') || url.pathname.startsWith('/music/share/') ||

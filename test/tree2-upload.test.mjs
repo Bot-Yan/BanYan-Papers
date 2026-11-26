@@ -489,6 +489,39 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.ok(dir.c.some(r => r.n === '内部'), '子目录仍要在清单里');
   });
 
+  await t.test('lazy catalogue: index, per-batch subtree and online flags', async () => {
+    const year = '2033';
+    const hash = 'c'.repeat(64);
+    const key = `cc/${hash}.pdf`;
+    await writeFile(join(data, year + '.json'), JSON.stringify({ batches: [
+      { name: '懒加载批次', stage: 'L', type: '考试', tree: { n: '懒加载批次', t: 'd', folderId: '88888888-4444-4444-4444-444444444444', c: [
+        { t: 'd', n: '卷子', c: [{ t: 'f', n: '在线卷.pdf', s: 8, h: hash, k: key, e: '.pdf', w: '2026-11-26' }] },
+      ] } },
+    ] }));
+    await mkdir(join(store, 'objects', 'cc'), { recursive: true });
+    await writeFile(join(store, 'objects', 'cc', hash + '.pdf'), 'pdfbytes');
+    const index = await api(`seasons/${year}/index`);
+    assert.equal(index.status, 200);
+    assert.equal(index.body.batches[0].name, '懒加载批次');
+    assert.equal(index.body.batches[0].online, 1);
+    assert.equal(index.body.batches[0].tree.c, undefined, '索引里不带子树');
+    assert.equal(index.body.totals.online, 1);
+    assert.equal(index.body.recent.length, 1);
+    assert.equal(index.body.recent[0].o, 1);
+    const fid = index.body.batches[0].folderId;
+    const batchRes = await api(`seasons/${year}/batches/${fid}`);
+    assert.equal(batchRes.status, 200);
+    const files = batchRes.body.tree.c[0].c;
+    assert.equal(files[0].o, 1, '子树节点要带在线标记');
+    const again = await fetch(origin + `/api/tree2/seasons/${year}/batches/${fid}`, {
+      headers: { 'If-None-Match': batchRes.headers.get('etag') },
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(again.status, 304);
+    const full = await api(`seasons/${year}`);
+    assert.equal(full.body.batches[0].tree.c[0].c[0].o, 1, '整份清单也带在线标记');
+  });
+
   await t.test('short link requires the pin and throttles guessing', async () => {
     const year = '2034';
     const entry = { t: 'f', n: 'short.pdf', k: file.key, s: file.bytes.length };

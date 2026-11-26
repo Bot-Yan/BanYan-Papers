@@ -6,7 +6,7 @@
 //   * 在线状态来自 /api/tree2/storage：有真实字节的文件才能预览/下载，其余走网盘兜底。
 
 // 版本号：改动这三个文件时同步递增，让浏览器一定拿到新的（见 index.html 里的 ?v=）。
-import { listSeasons, loadSeason, storageState, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261115b';
+import { listSeasons, loadSeason, loadSeasonIndex, loadBatch, fileUrl, fetchBytes, pref, apiBase, apiOriginLabel } from './api.js?v=20261126-lazy';
 import { kindOf, canRender, extOf, render, disposePdf, disposeWord } from './preview.js?v=20261116-word-layout';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -39,8 +39,8 @@ if (p2ToggleBtn) {
 const state = {
   seasons: [],
   season: null, // 当前届的元数据（seasons.json 里的一条）
-  manifest: null, // 当前届的完整清单
-  storage: { keys: new Set(), enabled: false, source: 'none' },
+  manifest: null, // 当前届的轻量索引（批次树按需懒加载，搜索/收藏时才拉全量）
+  fullLoaded: null, // 已拉过整份清单的届别（搜索/收藏/文件深链用）
   query: { s: '2026', p: '', q: '', k: '', fav: '' },
   open: new Set(), // 展开中的目录路径
   sort: pref.get('sort', 'date') === 'tree' ? 'date' : pref.get('sort', 'date'), // date | name | size
@@ -216,7 +216,7 @@ function crumbTrail(p) {
 const childPath = (parent, child) => (isStage(parent) ? child.n : joinPath(parent, child.n));
 
 /** 目录/文件是否符合当前搜索与类型筛选；返回 null 表示被过滤掉，否则返回命中计数。 */
-function matchNode(node, q, kind, pathPy) {
+function matchNode(node, q, kind, pathPy = '') {
   // here = 批次/上级目录 + 当前节点 的拼音首字母串（清单里的 p 字段）
   const here = pathPy + (node.p || '');
   if (node.t === 'f') {
@@ -227,7 +227,7 @@ function matchNode(node, q, kind, pathPy) {
   }
   const hits = [];
   let bytes = 0;
-  for (const c of node.c) {
+  for (const c of node.c || []) {
     const m = matchNode(c, q, kind, here);
     if (m) {
       hits.push(m);
@@ -242,7 +242,7 @@ function matchNode(node, q, kind, pathPy) {
 function flatten(node, base) {
   const out = [];
   const walk = (n, p) => {
-    for (const c of n.c) {
+    for (const c of n.c || []) {
       if (c.t === 'd') walk(c, joinPath(p, c.n));
       else out.push({ file: c, path: p });
     }
@@ -251,7 +251,40 @@ function flatten(node, base) {
   return out;
 }
 
-const isOnline = (f) => Boolean(f && f.k && state.storage.keys.has(f.k));
+// 在线标记由服务端写在文件节点上（有真实字节 → o=1），不再单独拉存储键列表
+const isOnline = (f) => Boolean(f && f.k && f.o === 1);
+
+const batchInFlight = new Map();
+
+/** 批次子树懒加载：左树展开/目录页只拉对应批次（gzip 后中位 ~2KB）。 */
+async function ensureBatch(batchNode) {
+  if (batchNode.c) return;
+  const year = state.query.s;
+  const key = `${year}/${batchNode.folderId || batchNode.n}`;
+  const pending = batchInFlight.get(key);
+  if (pending) return pending;
+  const p = loadBatch(year, batchNode.folderId || batchNode.n)
+    .then((data) => {
+      batchNode.c = (data.tree && data.tree.c) || [];
+      if (data.tree && data.tree.p) batchNode.p = data.tree.p;
+      batchInFlight.delete(key);
+    })
+    .catch((e) => {
+      batchInFlight.delete(key);
+      throw e;
+    });
+  batchInFlight.set(key, p);
+  return p;
+}
+
+/** 整年的完整清单：搜索/收藏这类需要全量数据的视图才拉（loadSeason 有内存缓存）。 */
+async function ensureFull() {
+  if (state.manifest.fullLoaded) return;
+  const full = await loadSeason(state.query.s);
+  full.recent = (state.manifest && state.manifest.recent) || full.recent;
+  state.manifest = full;
+  full.fullLoaded = true;
+}
 
 // ---------------------------------------------------------------- 路由
 
@@ -450,7 +483,7 @@ async function boot() {
     if (state.query.s && state.seasons.some((s) => String(s.id) === state.query.s)) {
       await openSeason(state.query.s);
       renderSeasons();
-      renderAll();
+      await renderAll();
       if (!restoreViewer()) writeUrl(false);
       pref.set('season', state.query.s);
     } else {
@@ -520,13 +553,13 @@ async function openSeason(id) {
   state.query.s = String(id);
   state.season = state.seasons.find((s) => String(s.id) === String(id)) || { id: String(id), title: `${id} 届` };
   try {
-    state.manifest = await loadSeason(state.query.s);
+    // 首屏只拉轻量索引（批次名单 + 计数 + 最近新增），点开哪个批次再拉哪个批次
+    state.manifest = await loadSeasonIndex(state.query.s);
   } catch (e) {
     state.manifest = null;
     // 往上抛，让 boot() 统一处理——否则后面 renderSeasons/renderAll 会在没有清单的状态下空跑
     throw new Error(`这一届的清单还没生成：${e.message}`);
   }
-  state.storage = await storageState(state.query.s);
   // 只展开 URL 里指定的那层；不再默认展开第一个批次——
   // A1 一旦自动展开就会铺开三十多个文件，后面的批次全被挤到屏幕外。
   state.open = new Set(state.query.p ? [state.query.p] : []);
@@ -628,7 +661,7 @@ function renderTree() {
 }
 
 function countFiles(node) {
-  return node.c.reduce((n, c) => n + (c.t === 'f' ? 1 : countFiles(c)), 0);
+  return (node.c || []).reduce((n, c) => n + (c.t === 'f' ? 1 : countFiles(c)), 0);
 }
 
 /**
@@ -729,12 +762,21 @@ function renderNode(node, path, depth, count, needFilter) {
     const build = () => {
       if (built) return;
       built = true;
-      const q = state.query.q.trim().toLowerCase();
-      const kind = state.query.k;
-      for (const c of node.c) {
-        const m = needFilter ? matchNode(c, q, kind) : { files: c.t === 'd' ? countFiles(c) : 1 };
-        if (!m) continue;
-        kids.appendChild(c.t === 'd' ? renderNode(c, childPath(path, c), depth + 1, m.files, needFilter) : renderFileNode(c, path));
+      const fill = () => {
+        const q = state.query.q.trim().toLowerCase();
+        const kind = state.query.k;
+        for (const c of node.c || []) {
+          const m = needFilter ? matchNode(c, q, kind) : { files: c.t === 'd' ? countFiles(c) : 1 };
+          if (!m) continue;
+          kids.appendChild(c.t === 'd' ? renderNode(c, childPath(path, c), depth + 1, m.files, needFilter) : renderFileNode(c, path));
+        }
+      };
+      // 批次根的子树还没加载（懒加载）→ 先拉这个批次再铺开
+      if (!node.c && node.folderId) {
+        kids.innerHTML = '<div class="t2-empty">正在加载…</div>';
+        ensureBatch(node).then(fill).catch(() => { kids.innerHTML = '<div class="t2-empty">加载失败，请再点一次</div>'; });
+      } else {
+        fill();
       }
     };
     if (!kids.hidden) build();
@@ -852,7 +894,7 @@ function renderStage(main, path, node) {
   for (const b of batches) {
     const li = document.createElement('li');
     li.className = 't2-batch';
-    const online = (b.tree.c || []).filter((c) => c.t === 'f' && isOnline(c)).length;
+    const online = b.online ?? (b.tree.c || []).filter((c) => c.t === 'f' && isOnline(c)).length;
     li.innerHTML = `
       <div class="t2-batch-main">
         <div class="t2-batch-name">${esc(b.name)}</div>
@@ -952,7 +994,6 @@ async function renderFavorites(main) {
 
 function renderHome(main) {
   const t = state.manifest.totals;
-  const st = state.storage;
   const kinds = state.manifest.kinds || {};
   const stages = state.manifest.stages || {};
   const year = state.manifest.year || state.query.s;
@@ -960,9 +1001,8 @@ function renderHome(main) {
   const byStage = {};
   for (const b of state.manifest.batches) byStage[b.stage] = (byStage[b.stage] || 0) + 1;
   const freshLimit = 12;
-  const fresh = flatten(rootOf(), '')
-    .filter(({ file }) => isNewFile(file))
-    .sort((a, b) => Date.parse(b.file.w) - Date.parse(a.file.w));
+  // 最近新增由服务端在轻量索引里算好；懒加载后主页手里没有整棵树
+  const fresh = (state.manifest.recent || []).map((r) => ({ file: r, path: r.folder || '' }));
   main.innerHTML = `
     <section class="t2-hero">
       <div class="t2-kicker">资料库 · ${esc(title)}</div>
@@ -972,13 +1012,13 @@ function renderHome(main) {
         <div class="t2-stat"><b>${t.batches ?? state.manifest.batches.length}</b><span>场考试</span></div>
         <div class="t2-stat"><b>${t.files}</b><span>条资料</span></div>
         <div class="t2-stat"><b>${fmtSize(t.bytes)}</b><span>原始体积</span></div>
-        <div class="t2-stat"><b>${st.keys.size}</b><span>个文件可预览</span></div>
+        <div class="t2-stat"><b>${t.online ?? 0}</b><span>个文件可预览</span></div>
         <div class="t2-stat"><b>${kinds.pdf || 0}</b><span>份 PDF</span></div>
         <div class="t2-stat"><b>${kinds.docx || 0}</b><span>份 Word</span></div>
       </div>
       ${
         t.duplicateFiles
-          ? `<p class="t2-deck" style="margin-top:10px;font-size:12.5px">清单共 ${t.files} 条，其中 <strong>${t.duplicateFiles} 条与其它文件内容完全相同</strong>（同一份卷子存了两个文件名），存储里共用一份，所以可预览的是 ${st.keys.size} 个文件——两个数字对得上，不是漏传。</p>`
+          ? `<p class="t2-deck" style="margin-top:10px;font-size:12.5px">清单共 ${t.files} 条，其中 <strong>${t.duplicateFiles} 条与其它文件内容完全相同</strong>（同一份卷子存了两个文件名），存储里共用一份，所以可预览的是 ${t.online ?? 0} 个文件——两个数字对得上，不是漏传。</p>`
           : ''
       }
     </section>
@@ -1004,7 +1044,7 @@ function renderHome(main) {
           .join('')}
       </div>
       ${
-        st.enabled
+        true
           ? ''
           : `<p style="margin-top:22px;font-size:13px;color:var(--sub)">当前届没有配置文件存储，预览按钮会提示"未入库"。配置方法见 <code>docs/tree2.md</code>。</p>`
       }
@@ -1574,14 +1614,31 @@ function wire() {
   });
 }
 
-function renderAll() {
+async function renderAll() {
   if (!state.manifest) return;
   const search = $('#q');
   // wire() 万一没跑到，search 可能是 null —— 别在这里再崩一次
   if (search && document.activeElement !== search) search.value = state.query.q;
   renderSeasons(); // 顶部届别按钮的高亮（aria-current）也要跟着当前届走
+  try {
+    // 懒加载的路由分派：搜索/文件深链要整年的数据，目录深链只要对应批次
+    if (state.query.q) await ensureFull();
+    else if (state.query.f) {
+      const fparts = seg(state.query.f);
+      const fb = batchByName(fparts[0]);
+      if (fb && !fb.tree.c) await ensureBatch(fb.tree);
+      else if (!fb) await ensureFull();
+    } else if (state.query.p && !isStage(state.query.p)) {
+      const parts = seg(state.query.p);
+      const b = batchByName(parts[0]);
+      if (b && !b.tree.c) await ensureBatch(b.tree);
+      else if (!b) await ensureFull();
+    }
+  } catch (e) {
+    toast(`数据加载失败：${e.message || e}`, true);
+  }
   renderTree();
-  renderMain();
+  await renderMain();
 }
 
 // ---------------------------------------------------------------- 启动
@@ -1616,7 +1673,7 @@ async function diagnose() {
     say(`GET /seasons/${latest}`, `请求失败 ${e.message}`, true);
   }
   say('state.manifest', state.manifest ? '已加载' : '空', !state.manifest);
-  say('state.storage', `${state.storage?.keys?.size ?? 0} 个对象`);
+  say('当前届在线文件', `${state.manifest?.totals?.online ?? 0} 个（轻量索引）`);
   say('#tree 内容', `${$('#tree')?.innerHTML.length ?? -1} 字符`, !$('#tree')?.innerHTML.length);
   say('#page 内容', `${$('#page')?.innerHTML.length ?? -1} 字符`, !$('#page')?.innerHTML.length);
   const main = $('#page');

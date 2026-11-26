@@ -438,8 +438,104 @@ route('GET', /^\/api\/tree2\/seasons\/([^/]+)$/, async (req, res, [, year]) => {
     res.writeHead(304, { ...cors(req), ETag: etag, 'Cache-Control': cacheControl });
     return res.end();
   }
+  // 在线标记：有真实字节的文件节点带 o=1，前端拿节点就能判断能不能预览，
+  // 不必再拉一遍 /storage/:year 的全量键列表（那一份 gzip 后也有 16~53KB）。
+  // 对象集合只有随清单增删才变，所以标记与 ETag 一致，304 语义不受影响。
+  const objects = await objectKeysCached();
+  const manifest = JSON.parse(raw);
+  const markOnline = (n) => {
+    for (const c of n.c || []) {
+      if (c.t === 'd') markOnline(c);
+      else if (c.k && objects.has(c.k)) c.o = 1;
+    }
+  };
+  for (const b of manifest.batches || []) markOnline(b.tree || {});
   res.writeHead(200, { ...cors(req), 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheControl, ETag: etag });
-  res.end(raw);
+  res.end(JSON.stringify(manifest));
+});
+
+// 轻量届别索引：批次名单 + 计数 + 在线数 + 最近新增，不含整棵目录树。
+// 主页/左树首屏只拉这份（几 KB），点开哪个批次再拉哪个批次的子树；
+// 搜索/收藏/文件深链才回退到上面的整份清单。
+route('GET', /^\/api\/tree2\/seasons\/([^/]+)\/index$/, async (req, res, [, year]) => {
+  requireRead(req);
+  safeYear(year);
+  const raw = await fsp.readFile(path.join(cfg.data, `${year}.json`), 'utf8').catch(() => null);
+  if (!raw) throw new HttpError(404, '这一届的清单还没生成');
+  const m = JSON.parse(raw);
+  const objects = await objectKeysCached();
+  const freshCutoff = Date.now() - 8 * 86400000;
+  const recent = [];
+  const batches = (m.batches || []).map((b) => {
+    let online = 0;
+    const walk = (n, folder) => {
+      for (const c of n.c || []) {
+        if (c.t === 'd') walk(c, `${folder}/${c.n}`);
+        else {
+          if (c.k && objects.has(c.k)) online++;
+          if (c.k && c.w && Date.parse(c.w) >= freshCutoff) {
+            recent.push({ n: c.n, k: c.k, s: c.s || 0, e: c.e || '', w: c.w, o: objects.has(c.k) ? 1 : 0, folder });
+          }
+        }
+      }
+    };
+    walk(b.tree || {}, b.name);
+    return {
+      name: b.name, stage: b.stage, type: b.type, date: b.date,
+      files: b.files, dirs: b.dirs, bytes: b.bytes, subj: b.subj || [],
+      folderId: (b.tree || {}).folderId,
+      tree: { n: b.name, t: 'd', folderId: (b.tree || {}).folderId, p: (b.tree || {}).p },
+      online,
+    };
+  });
+  recent.sort((a, b) => String(b.w).localeCompare(String(a.w)));
+  recent.length = Math.min(recent.length, 60);
+  const onlineTotal = batches.reduce((n, b) => n + b.online, 0);
+  json(res, 200, {
+    schema: m.schema, year: m.year, title: m.title,
+    totals: { ...(m.totals || {}), online: onlineTotal },
+    stages: m.stages, kinds: m.kinds, generatedAt: m.generatedAt,
+    batches, recent,
+  }, { 'Cache-Control': cfg.privateRead ? 'no-store' : 'no-cache' });
+});
+
+// 单个批次的子树：左树展开 / 目录页才拉（gzip 后中位 ~2KB，最大 ~11KB）。
+// 子树自带 ETag：只改了一个批次时，其它批次的 304 不受影响。
+// 第二段既可以是批次 folderId，也可以是批次名（早期数据没分配 folderId 也能用）。
+route('GET', /^\/api\/tree2\/seasons\/([^/]+)\/batches\/([^/]+)$/, async (req, res, [, year, rawId]) => {
+  requireRead(req);
+  safeYear(year);
+  let id = rawId;
+  try { id = decodeURIComponent(rawId); } catch { /* 原样用 */ }
+  const m = await readManifestFile(year).catch((error) => {
+    if (error.code === 'ENOENT') throw new HttpError(404, '这一届的清单还没生成');
+    throw error;
+  });
+  const batch = (m.batches || []).find((b) => (b.tree || {}).folderId === id)
+    || (m.batches || []).find((b) => b.name === id);
+  if (!batch) throw new HttpError(404, '批次不存在或已移除');
+  const objects = await objectKeysCached();
+  const tree = batch.tree || {};
+  const markBatchOnline = (n) => {
+    for (const c of n.c || []) {
+      if (c.t === 'd') markBatchOnline(c);
+      else if (c.k && objects.has(c.k)) c.o = 1;
+    }
+  };
+  markBatchOnline(tree);
+  const body = {
+    name: batch.name, stage: batch.stage, type: batch.type, date: batch.date,
+    files: batch.files, dirs: batch.dirs, bytes: batch.bytes, subj: batch.subj || [],
+    folderId: (batch.tree || {}).folderId, tree,
+  };
+  const etag = `"${createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 20)}"`;
+  const cacheControl = cfg.privateRead ? 'no-store' : 'no-cache';
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, { ...cors(req), ETag: etag, 'Cache-Control': cacheControl });
+    return res.end();
+  }
+  res.writeHead(200, { ...cors(req), 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheControl, ETag: etag });
+  res.end(JSON.stringify(body));
 });
 
 route('GET', /^\/api\/tree2\/storage\/([^/]+)$/, async (req, res, [, year]) => {

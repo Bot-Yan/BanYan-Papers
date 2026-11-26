@@ -123,6 +123,8 @@ async function request(path, { method = 'GET', body, signal, timeout = 15000 } =
 // ---------------------------------------------------------------- 清单
 
 const seasonCache = new Map();
+const seasonIndexCache = new Map();
+const batchCache = new Map(); // `${year}/${folderId}` -> { etag, data }
 
 export async function listSeasons() {
   const data = await request('/api/tree2/seasons');
@@ -144,6 +146,41 @@ export async function loadSeason(id) {
 /** 清掉缓存（上传完成后目录树计数会变）。 */
 export function invalidate(id) {
   seasonCache.delete(id);
+}
+
+/** 轻量届别索引：批次名单 + 计数 + 最近新增，不含整棵目录树（主页首屏用，几 KB）。 */
+export async function loadSeasonIndex(id) {
+  if (seasonIndexCache.has(id)) return seasonIndexCache.get(id);
+  const p = request(`/api/tree2/seasons/${encodeURIComponent(id)}/index`).catch((e) => {
+    seasonIndexCache.delete(id);
+    throw e;
+  });
+  seasonIndexCache.set(id, p);
+  return p;
+}
+
+/** 单个批次的子树：左树展开 / 目录页用。带 ETag，没变就是 304（流量不走 body）。 */
+export async function loadBatch(year, folderId) {
+  const cacheKey = `${encodeURIComponent(year)}/${encodeURIComponent(folderId)}`;
+  const hit = batchCache.get(cacheKey);
+  const headers = {};
+  if (hit && hit.etag) headers['If-None-Match'] = hit.etag;
+  let res;
+  try {
+    res = await fetch(`${apiBase()}/api/tree2/seasons/${encodeURIComponent(year)}/batches/${encodeURIComponent(folderId)}`, {
+      headers,
+      cache: 'no-cache',
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    if (hit) return hit.data; // 断网时退回上一次拿到的子树
+    throw e;
+  }
+  if (res.status === 304 && hit) return hit.data;
+  if (!res.ok) throw new ApiError(res.status, `服务返回 ${res.status}`);
+  const data = await res.json();
+  batchCache.set(cacheKey, { etag: res.headers.get('etag') || '', data });
+  return data;
 }
 
 /** 存储状态：这个赛季有哪些文件已经有真实字节（可在线预览/下载）。 */
