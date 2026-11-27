@@ -12,7 +12,9 @@
  *     MKCOL 建目录 / DELETE 下架（移出清单，对象保留，与 console 下架同语义）
  *     MOVE 同批次内移动/改名
  *
- * 鉴权：Basic 用户名任意、密码填以下任一口令（也接受 Bearer）：
+ * 鉴权：Basic 密码填以下任一口令（也接受 Bearer）；用户名默认随意，
+ *   可用 TREE2_ADMIN_USER / TREE2_WEBDAV_USER / TREE2_CUSTOMER_USER /
+ *   TREE2_VISITOR_USER 按角色指定（配了就必须一致）：
  *   - token      主服务 TREE2_TOKEN（console/backend/bot 用的那个）
  *   - webbavToken WebDAV 专用口令（TREE2_WEBDAV_TOKEN），便于单独轮换
  */
@@ -49,6 +51,10 @@ export function createWebdavHandler({
   webdavToken,    // WebDAV 专用口令（可与主口令并行有效）
   customerToken,  // 顾客口令：只能新建批次目录与上传，不能删改
   visitorToken,   // 访客口令：只读（列出 + 下载）
+  adminUser,      // 可选：Basic 用户名需匹配（TREE2_ADMIN_USER，不配则用户名随意）
+  webdavUser,     // 可选：同上（TREE2_WEBDAV_USER）
+  customerUser,   // 可选：同上（TREE2_CUSTOMER_USER）
+  visitorUser,    // 可选：同上（TREE2_VISITOR_USER）
   collectGarbage, // 可选：删除后回收无引用对象（由主服务注入，做全库引用检查）
   ingestPush,     // 可选：入库推送队列（主服务注入），WebDAV 上传后也要通知
   stageOf = (name) => (/^[ABCDEFGHZ]/i.test(name) ? name.slice(0, 1).toUpperCase() : '省外'),
@@ -171,19 +177,25 @@ export function createWebdavHandler({
     if (!anyCredential) return 'admin'; // 未配口令时全放开（仅本机开发）
     const h = req.headers.authorization || '';
     let secret = '';
+    let user = '';
+    let viaBasic = false;
     if (h.startsWith('Bearer ')) secret = h.slice(7);
     else if (h.startsWith('Basic ')) {
       try {
-        const [user, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(':');
-        if (!user) return null; // Windows 要求用户名非空
+        const [u, pass] = Buffer.from(h.slice(6), 'base64').toString('utf8').split(':');
+        if (!u) return null; // Windows 要求用户名非空
+        user = u;
         secret = pass || '';
+        viaBasic = true;
       } catch { return null; }
     }
     if (!secret) return null;
-    // 口令决定角色：不同角色发不同口令，用户名随意（部分客户端只认固定用户）
-    if (matchAny(adminTokens, secret)) return 'admin';
-    if (matchAny(customerTokens, secret)) return 'customer';
-    if (matchAny(visitorTokens, secret)) return 'visitor';
+    // 口令决定角色。Basic 的用户名可选配（TREE2_*_USER）：配了就要求一致，
+    // 没配则用户名随意（部分客户端只认固定用户）；Bearer 不带用户名，不受影响。
+    const userOk = (want) => !want || !viaBasic || same(user, want);
+    if (matchAny(adminTokens, secret) && userOk(adminUser)) return 'admin';
+    if (matchAny(customerTokens, secret) && userOk(customerUser)) return 'customer';
+    if (matchAny(visitorTokens, secret) && userOk(visitorUser)) return 'visitor';
     return null;
   }
 

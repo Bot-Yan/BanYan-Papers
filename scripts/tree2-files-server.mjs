@@ -2157,6 +2157,11 @@ const webdav = createWebdavHandler({
   // 分级账号：customer 只能新建目录与上传，visitor 只读。
   customerToken: process.env.TREE2_CUSTOMER_TOKEN || '',
   visitorToken: process.env.TREE2_VISITOR_TOKEN || '',
+  // Basic 用户名可选配（不配则用户名随意，口令决定角色）
+  adminUser: process.env.TREE2_ADMIN_USER || '',
+  webdavUser: process.env.TREE2_WEBDAV_USER || '',
+  customerUser: process.env.TREE2_CUSTOMER_USER || '',
+  visitorUser: process.env.TREE2_VISITOR_USER || '',
   collectGarbage,   // 删除后回收无引用对象（全库引用检查）
   ingestPush,       // 与主服务共用推送队列：WebDAV 上传也要通知群里
   stageOf: t2StageOf,

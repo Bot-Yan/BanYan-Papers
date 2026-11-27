@@ -631,5 +631,18 @@ fs.createWriteStream = (file, ...args) => basename(file).startsWith('${blockedSt
     assert.equal(empty.status, 400);
   });
 
+  await t.test('webdav: a configured Basic username is required (TREE2_CUSTOMER_USER)', async () => {
+    await stop();
+    await start({ TREE2_CUSTOMER_USER: 'alice' });
+    const basic = (user) => `Basic ${Buffer.from(`${user}:${customerToken}`).toString('base64')}`;
+    const url = origin + '/webdav/2026/Shared/用户名测试.txt';
+    const wrong = await fetch(url, { method: 'PUT', headers: { Authorization: basic('anyuser') }, body: 'x', signal: AbortSignal.timeout(10000) });
+    assert.equal(wrong.status, 401, '错用户名要 401');
+    const right = await fetch(url, { method: 'PUT', headers: { Authorization: basic('alice') }, body: 'x', signal: AbortSignal.timeout(10000) });
+    assert.equal(right.status, 201, '对用户名要放行');
+    const bearer = await fetch(url, { method: 'PUT', headers: { Authorization: `Bearer ${adminToken}` }, body: 'y', signal: AbortSignal.timeout(10000) });
+    assert.equal(bearer.status, 204, 'Bearer 管理员不受用户名配置影响');
+  });
+
 
 });

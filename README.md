@@ -49,7 +49,7 @@ audio-map / share-map / shares 是否仍引用该内容（按 sha256）；
 
 支持 `PROPFIND`（列出）、`GET`/`HEAD`（含 Range）、`PUT`（写对象库 + 改清单 + 记 uplog）、`MKCOL`、`MOVE`、`DELETE`（摘出清单后按引用回收对象）、`LOCK`/`UNLOCK`（返回合法 token，不真正互斥）、`PROPPATCH`（回成功不存属性）。
 
-鉴权：Basic 用户名任意、密码填以下任一口令（也接受 `Bearer`），**口令决定角色**：
+鉴权：Basic 密码填以下任一口令（也接受 `Bearer`），**口令决定角色**；用户名默认随意，也可按角色指定（见下方环境变量）：
 
 | 环境变量 | 角色 | 能做什么 |
 |---|---|---|
